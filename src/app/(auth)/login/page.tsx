@@ -94,10 +94,6 @@ export default function LoginPage() {
           </button>
         </form>
 
-        {/* Demo hint */}
-        <div className="mt-4 text-center text-[11px] text-pm-text-3">
-          Demo: superadmin / admin1234
-        </div>
       </div>
     </div>
   )
