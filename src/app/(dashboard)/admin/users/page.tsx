@@ -2,6 +2,7 @@
 
 import { useState } from 'react'
 import useSWR from 'swr'
+import { useSession } from 'next-auth/react'
 import { ROLE_LABELS, ROLE_COLORS } from '@/lib/permissions'
 
 const fetcher = (url: string) => fetch(url).then((r) => r.json())
@@ -71,6 +72,7 @@ const TYPE_FILTERS = [
 ]
 
 function AdminUsersContent() {
+  const { data: session } = useSession()
   const { data: users, mutate } = useSWR('/api/users', fetcher)
   const { data: projects } = useSWR('/api/projects', fetcher)
   const [typeFilter, setTypeFilter] = useState('ALL')
@@ -81,6 +83,19 @@ function AdminUsersContent() {
   const [error, setError] = useState('')
   const [importResult, setImportResult] = useState<{ added: number; updated: number; skipped: number; errors: string[] } | null>(null)
   const [importing, setImporting] = useState(false)
+  const [deleteTarget, setDeleteTarget] = useState<{ id: string; name: string } | null>(null)
+  const [deleting, setDeleting] = useState(false)
+
+  const canDelete = session?.user?.role === 'SUPER_ADMIN' || session?.user?.role === 'ADMIN'
+
+  const handleDelete = async () => {
+    if (!deleteTarget) return
+    setDeleting(true)
+    await fetch(`/api/users/${deleteTarget.id}`, { method: 'DELETE' })
+    setDeleting(false)
+    setDeleteTarget(null)
+    mutate()
+  }
 
   const openAdd = () => { setForm(emptyForm); setEditingId(null); setShowModal(true); setError('') }
   const openEdit = (u: any) => {
@@ -209,13 +224,36 @@ function AdminUsersContent() {
                   </div>
                 </td>
                 <td className="px-4 py-3 text-right">
-                  <button onClick={() => openEdit(u)} className="text-info hover:underline">แก้ไข</button>
+                  <div className="flex items-center justify-end gap-3">
+                    <button onClick={() => openEdit(u)} className="text-info hover:underline text-[12px]">แก้ไข</button>
+                    {canDelete && (
+                      <button onClick={() => setDeleteTarget({ id: u.id, name: u.name })} className="text-danger hover:underline text-[12px]">ลบ</button>
+                    )}
+                  </div>
                 </td>
               </tr>
             ))}
           </tbody>
         </table>
       </div>
+
+      {/* Delete confirm */}
+      {deleteTarget && (
+        <div className="fixed inset-0 bg-black/40 z-50 flex items-center justify-center p-4">
+          <div className="bg-pm-card rounded-lg w-full max-w-sm shadow-xl p-6">
+            <h3 className="text-[15px] font-semibold text-pm-text mb-2">ยืนยันการลบผู้ใช้งาน</h3>
+            <p className="text-[13px] text-pm-text-2 mb-5">
+              ต้องการลบ <span className="font-medium text-pm-text">{deleteTarget.name}</span> ออกจากระบบ? การกระทำนี้ไม่สามารถยกเลิกได้
+            </p>
+            <div className="flex justify-end gap-2">
+              <button onClick={() => setDeleteTarget(null)} className="px-4 py-2 border border-pm-border rounded-md text-[12px] text-pm-text-2 hover:bg-pm-bg">ยกเลิก</button>
+              <button onClick={handleDelete} disabled={deleting} className="px-4 py-2 bg-danger text-white rounded-md text-[12px] font-medium disabled:opacity-60 hover:opacity-90">
+                {deleting ? 'กำลังลบ...' : 'ลบผู้ใช้งาน'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Modal */}
       {showModal && (
