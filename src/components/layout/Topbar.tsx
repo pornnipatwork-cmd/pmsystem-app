@@ -11,6 +11,7 @@ export function Topbar({ title }: { title: string }) {
   const { currentProject, setCurrentProject, setSidebarOpen } = useProjectStore()
   const [showProjectMenu, setShowProjectMenu] = useState(false)
   const [currentDate, setCurrentDate] = useState('')
+  const [allProjects, setAllProjects] = useState<{ id: string; code: string; name: string; color: string }[]>([])
 
   useEffect(() => {
     const now = new Date()
@@ -20,15 +21,34 @@ export function Topbar({ title }: { title: string }) {
     setCurrentDate(`${day} ${month} ${year}`)
   }, [])
 
+  // Admin: fetch all projects from API; others: use session projects
   useEffect(() => {
-    if (session?.user?.projects?.length && !currentProject) {
-      setCurrentProject(session.user.projects[0])
+    if (!session) return
+    const role = session.user?.role ?? ''
+    const isAdmin = role === 'SUPER_ADMIN' || role === 'ADMIN'
+    if (isAdmin) {
+      fetch('/api/projects')
+        .then(r => r.json())
+        .then(data => {
+          if (Array.isArray(data)) {
+            setAllProjects(data.map((p: any) => ({ id: p.id, code: p.code, name: p.name, color: p.color })))
+          }
+        })
+        .catch(() => {})
+    } else {
+      setAllProjects(session.user?.projects ?? [])
     }
-  }, [session, currentProject, setCurrentProject])
+  }, [session])
 
-  const projects = session?.user?.projects ?? []
+  useEffect(() => {
+    if (allProjects.length > 0 && !currentProject) {
+      setCurrentProject(allProjects[0])
+    }
+  }, [allProjects, currentProject, setCurrentProject])
+
   const role = session?.user?.role ?? ''
   const readOnly = isReadOnly(role)
+  const projects = allProjects
 
   return (
     <header className="h-[52px] bg-pm-card border-b border-pm-border flex items-center justify-between px-3 md:px-5 flex-shrink-0">
