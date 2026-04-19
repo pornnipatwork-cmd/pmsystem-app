@@ -1,25 +1,21 @@
 import { PrismaClient } from '@prisma/client'
-import { PrismaLibSql } from '@prisma/adapter-libsql'
+import { PrismaLibSQL } from '@prisma/adapter-libsql'
+import { createClient } from '@libsql/client'
 
 const globalForPrisma = globalThis as unknown as {
   prisma: PrismaClient | undefined
 }
 
 function createPrismaClient() {
-  // Turso (production) — ใช้ libSQL adapter
   if (process.env.TURSO_DATABASE_URL) {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const adapter = new PrismaLibSql({
+    const libsql = createClient({
       url: process.env.TURSO_DATABASE_URL,
       authToken: process.env.TURSO_AUTH_TOKEN,
-    }) as any
-    return new PrismaClient({
-      adapter,
-      log: process.env.NODE_ENV === 'development' ? ['error', 'warn'] : ['error'],
     })
+    const adapter = new PrismaLibSQL(libsql)
+    return new PrismaClient({ adapter })
   }
 
-  // Local dev — ใช้ SQLite ปกติ
   return new PrismaClient({
     log: process.env.NODE_ENV === 'development' ? ['query', 'error', 'warn'] : ['error'],
   })
