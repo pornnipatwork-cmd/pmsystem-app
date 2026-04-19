@@ -1,7 +1,7 @@
 /** @type {import('next').NextConfig} */
 const nextConfig = {
   experimental: {
-    serverComponentsExternalPackages: ['bcryptjs', 'exceljs'],
+    serverComponentsExternalPackages: ['bcryptjs', 'exceljs', '@libsql/client', 'libsql'],
   },
   images: {
     remotePatterns: [
