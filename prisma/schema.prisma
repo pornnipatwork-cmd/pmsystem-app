@@ -1,0 +1,151 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider        = "prisma-client-js"
+  previewFeatures = ["driverAdapters"]
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+// ─── Models ───────────────────────────────────────────────────────────────────
+// ProjectType: HIGHRISE | LOWRISE_AP | LOWRISE_NONAP
+// UserRole: SUPER_ADMIN | TECHNICIAN | ASSIST_ADMIN | BMVM | ENGINEER
+// PMItemType: EE | ME
+// PMPeriod: DAILY | WEEKLY | MONTHLY | QUARTERLY | YEARLY
+// ScheduleStatus: UPCOMING | TODAY | DONE | OVERDUE | RESCHEDULED
+// CheckResult: PASS | FAIL
+// ImportStatus: PENDING | SUCCESS | FAILED
+
+model Project {
+  id             String   @id @default(cuid())
+  code           String   @unique
+  name           String
+  type           String   // HIGHRISE | LOWRISE_AP | LOWRISE_NONAP
+  location       String?
+  description    String?
+  lineChannelToken String?  // Line Messaging API - Channel Access Token
+  lineGroupId      String?  // Line Messaging API - Group/Room ID
+  lineNotifyTime   String?  // null = ปิดการแจ้งเตือน
+  color          String   @default("#1D9E75")
+  createdAt      DateTime @default(now())
+
+  users               UserProject[]
+  pmItems             PMItem[]
+  importFiles         ImportFile[]
+  subCategoryComments PMSubCategoryComment[]
+}
+
+model User {
+  id         String   @id @default(cuid())
+  username   String   @unique
+  password   String
+  name       String
+  employeeId String?
+  role       String   // SUPER_ADMIN | TECHNICIAN | ASSIST_ADMIN | BMVM | ENGINEER
+  createdAt  DateTime @default(now())
+
+  projects             UserProject[]
+  checkedSchedules     PMSchedule[] @relation("CheckedBy")
+  rescheduledSchedules PMSchedule[] @relation("RescheduledBy")
+  importedFiles        ImportFile[]
+  subCategoryComments  PMSubCategoryComment[]
+}
+
+model UserProject {
+  userId    String
+  projectId String
+  user      User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  project   Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@id([userId, projectId])
+}
+
+model PMItem {
+  id             String     @id @default(cuid())
+  projectId      String
+  project        Project    @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  type           String     // EE | ME
+  category       String
+  subCategory    String?
+  no             Int
+  name           String
+  number         String
+  location       String?
+  period         String     // DAILY | WEEKLY | MONTHLY | QUARTERLY | YEARLY
+  importedFileId String?
+  importedFile   ImportFile? @relation(fields: [importedFileId], references: [id])
+
+  schedules PMSchedule[]
+
+  @@unique([projectId, type, number])
+  @@index([projectId, type])
+}
+
+model PMSchedule {
+  id                String    @id @default(cuid())
+  pmItemId          String
+  pmItem            PMItem    @relation(fields: [pmItemId], references: [id], onDelete: Cascade)
+  scheduledDate     DateTime
+  status            String    @default("UPCOMING") // UPCOMING | TODAY | DONE | OVERDUE | RESCHEDULED
+  result            String?   // PASS | FAIL
+  remark            String?
+  photoUrl          String?   // JSON array of up to 3 photo URLs
+  fileUrl           String?   // single file attachment URL
+  fileName          String?   // original filename of attachment
+  checkedAt         DateTime?
+  checkedById       String?
+  checkedBy         User?     @relation("CheckedBy", fields: [checkedById], references: [id])
+  rescheduledDate   DateTime?
+  rescheduledRemark String?
+  rescheduledById   String?
+  rescheduledBy     User?     @relation("RescheduledBy", fields: [rescheduledById], references: [id])
+
+  @@unique([pmItemId, scheduledDate])
+  @@index([pmItemId])
+  @@index([scheduledDate])
+  @@index([status])
+}
+
+model PMSubCategoryComment {
+  id          String   @id @default(cuid())
+  projectId   String
+  project     Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  type        String   // EE | ME
+  category    String
+  subCategory String
+  month       Int
+  year        Int
+  comment     String
+  createdById String
+  createdBy   User     @relation(fields: [createdById], references: [id])
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@unique([projectId, type, category, subCategory, month, year])
+  @@index([projectId, month, year])
+}
+
+model SystemSetting {
+  key   String @id
+  value String
+}
+
+model ImportFile {
+  id           String    @id @default(cuid())
+  projectId    String
+  project      Project   @relation(fields: [projectId], references: [id])
+  fileName     String
+  month        Int
+  year         Int
+  importedById String
+  importedBy   User      @relation(fields: [importedById], references: [id])
+  importedAt   DateTime  @default(now())
+  status       String    @default("PENDING") // PENDING | SUCCESS | FAILED
+  errorMsg     String?
+
+  pmItems PMItem[]
+}
