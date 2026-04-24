@@ -9,17 +9,11 @@ export async function DELETE(_req: NextRequest) {
     return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
   }
 
-  // Count schedules linked to imported items before deletion
-  const scheduleCount = await prisma.pMSchedule.count({
-    where: {
-      pmItem: { importedFileId: { not: null } },
-    },
-  })
+  // Count all schedules before deletion
+  const scheduleCount = await prisma.pMSchedule.count()
 
-  // Delete all PMItems with importedFileId not null (cascades PMSchedules)
-  const deleted = await prisma.pMItem.deleteMany({
-    where: { importedFileId: { not: null } },
-  })
+  // Delete all PMItems (cascades PMSchedules via onDelete: Cascade)
+  const deleted = await prisma.pMItem.deleteMany({})
 
   // Delete all ImportFile records
   await prisma.importFile.deleteMany({})

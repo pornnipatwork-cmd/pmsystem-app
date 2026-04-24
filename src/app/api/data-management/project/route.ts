@@ -16,21 +16,19 @@ export async function DELETE(req: NextRequest) {
     return NextResponse.json({ error: 'projectId is required' }, { status: 400 })
   }
 
-  // Count PMItems to be deleted (those with importedFileId not null for this project)
+  // Count PMItems to be deleted for this project
   const itemCount = await prisma.pMItem.count({
-    where: { projectId, importedFileId: { not: null } },
+    where: { projectId },
   })
 
   // Count schedules linked to those items
   const scheduleCount = await prisma.pMSchedule.count({
-    where: {
-      pmItem: { projectId, importedFileId: { not: null } },
-    },
+    where: { pmItem: { projectId } },
   })
 
   // Delete PMItems (cascades PMSchedules via onDelete: Cascade)
   const deleted = await prisma.pMItem.deleteMany({
-    where: { projectId, importedFileId: { not: null } },
+    where: { projectId },
   })
 
   // Delete ImportFile records for this project
