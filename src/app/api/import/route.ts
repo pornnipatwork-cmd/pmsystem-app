@@ -6,6 +6,9 @@ import { canEdit, canAccessProject } from '@/lib/permissions'
 import { parseExcelFile, extractMonthYearFromFilename } from '@/lib/excel-parser'
 import { calculateStatus } from '@/lib/status'
 
+// ให้ Vercel รัน function ได้นานสูงสุด 60 วินาที (Hobby tier max)
+export const maxDuration = 60
+
 export async function POST(req: NextRequest) {
   const session = await getServerSession(authOptions)
   if (!session || !canEdit(session.user.role)) {
@@ -79,14 +82,11 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: reason }, { status: 422 })
     }
 
-    // month/year ใช้จากชื่อไฟล์เป็นหลัก (ไม่ override ด้วย parser fallback)
-
-    // Upsert PM Items and create schedules
+    // Upsert PM Items (ทีละรายการ — ต้องการ id กลับมาสำหรับ schedule)
     let createdItems = 0
-    let createdSchedules = 0
+    const scheduleRows: { pmItemId: string; scheduledDate: Date; status: string }[] = []
 
     for (const item of parseResult.items) {
-      // Upsert PMItem (use projectId + type + number as unique key)
       const pmItem = await prisma.pMItem.upsert({
         where: { projectId_type_number: { projectId, type: item.type, number: item.number } },
         create: {
@@ -107,22 +107,32 @@ export async function POST(req: NextRequest) {
           name: item.name,
           location: item.location,
           period: item.period,
-          // ไม่ overwrite importedFileId — ให้ item ยังเป็นของไฟล์ที่ import ครั้งแรก
         },
       })
       createdItems++
 
-      // Create PMSchedule for each day with ●
+      // รวบรวม schedule data สำหรับ batch insert
       for (const day of item.scheduleDays) {
-        const schedDate = new Date(Date.UTC(year, month - 1, day))
-        const status = calculateStatus({ scheduledDate: schedDate })
+        const scheduledDate = new Date(Date.UTC(year, month - 1, day))
+        const status = calculateStatus({ scheduledDate })
+        scheduleRows.push({ pmItemId: pmItem.id, scheduledDate, status })
+      }
+    }
 
-        await prisma.pMSchedule.upsert({
-          where: { pmItemId_scheduledDate: { pmItemId: pmItem.id, scheduledDate: schedDate } },
-          create: { pmItemId: pmItem.id, scheduledDate: schedDate, status },
-          update: { status }, // don't overwrite results if already checked
-        })
-        createdSchedules++
+    // Batch insert schedules ด้วย INSERT OR IGNORE (ไม่ทับข้อมูลที่ check-in แล้ว)
+    let createdSchedules = 0
+    if (scheduleRows.length > 0) {
+      // แบ่งเป็น chunk เพื่อไม่ให้ query ยาวเกินไป
+      const CHUNK = 50
+      for (let i = 0; i < scheduleRows.length; i += CHUNK) {
+        const chunk = scheduleRows.slice(i, i + CHUNK)
+        const placeholders = chunk.map(() => '(?, ?, ?)').join(', ')
+        const values = chunk.flatMap(r => [r.pmItemId, r.scheduledDate.toISOString(), r.status])
+        await prisma.$executeRawUnsafe(
+          `INSERT OR IGNORE INTO PMSchedule (id, pmItemId, scheduledDate, status) SELECT lower(hex(randomblob(4)))||'-'||lower(hex(randomblob(2)))||'-4'||substr(lower(hex(randomblob(2))),2)||'-'||substr('89ab',abs(random())%4+1,1)||substr(lower(hex(randomblob(2))),2)||'-'||lower(hex(randomblob(6))), t.a, t.b, t.c FROM (VALUES ${placeholders}) AS t(a,b,c)`,
+          ...values
+        )
+        createdSchedules += chunk.length
       }
     }
 
