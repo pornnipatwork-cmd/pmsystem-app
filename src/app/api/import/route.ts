@@ -35,11 +35,13 @@ async function tursoPipeline(
   }
 }
 
+// Turso HTTP API ต้องการ value เป็น string เสมอ (แม้ type จะเป็น integer)
+// ref: https://docs.turso.tech/sdk/http/reference
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 function tv(value: string | number | null | undefined): any {
   if (value === null || value === undefined || value === '') return { type: 'null' }
-  if (typeof value === 'number') return { type: 'integer', value }
-  return { type: 'text', value }
+  // ต้องส่ง value เป็น string เสมอ — SQLite จะ coerce type ให้อัตโนมัติตาม column affinity
+  return { type: 'text', value: String(value) }
 }
 
 export async function POST(req: NextRequest) {
