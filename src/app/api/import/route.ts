@@ -284,6 +284,16 @@ export async function POST(req: NextRequest) {
       items: createdItems,
       schedules: createdSchedules,
       errors: parseResult.errors,
+      // DEBUG — ลบออกหลัง diagnose เสร็จ
+      _debug: {
+        parsedItemCount: parseResult.items.length,
+        totalScheduleDays: parseResult.items.reduce((s, i) => s + i.scheduleDays.length, 0),
+        itemsWithSchedules: parseResult.items.filter(i => i.scheduleDays.length > 0).length,
+        sample: parseResult.items.slice(0, 3).map(i => ({
+          name: i.name, number: i.number, scheduleDays: i.scheduleDays,
+        })),
+        parseErrors: parseResult.errors,
+      },
     })
   } catch (error: unknown) {
     const msg = error instanceof Error ? error.message : 'Unknown error'
