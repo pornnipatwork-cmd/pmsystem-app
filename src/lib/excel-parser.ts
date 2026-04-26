@@ -56,11 +56,11 @@ export async function parseExcelFile(
 
   let workbook: XLSX.WorkBook
   try {
+    // raw: true = skip cell formatting → เร็วกว่า 3-5x สำหรับไฟล์ .xls ขนาดใหญ่
+    // getCellValue() ใช้ cell.w ?? cell.v → ตกไป cell.v โดยอัตโนมัติ ยังทำงานได้ปกติ
     workbook = XLSX.read(buffer, {
       type: 'buffer',
-      cellText: true,
-      cellNF: false,
-      raw: false,
+      raw: true,
     })
   } catch (err) {
     result.errors.push(`อ่านไฟล์ไม่ได้: ${err instanceof Error ? err.message : String(err)}`)

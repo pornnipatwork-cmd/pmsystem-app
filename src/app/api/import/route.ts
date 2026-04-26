@@ -130,9 +130,11 @@ export async function POST(req: NextRequest) {
       const tursoUrl = process.env.TURSO_DATABASE_URL!.replace('libsql://', 'https://')
       const tursoToken = process.env.TURSO_AUTH_TOKEN!
 
-      // ── Step 1: ดึง PMItem ที่มีอยู่แล้วสำหรับ project นี้ (1 HTTP call) ──
+      // ── Step 1: ดึงเฉพาะ PMItem ที่ number ตรงกับไฟล์ (ลด response size 10-100x) ──
+      // ใช้ number IN (...) แทนการดึง ALL items ของ project
+      const parsedNumbers = [...new Set(parseResult.items.map(i => i.number))]
       const existingItems = await prisma.pMItem.findMany({
-        where: { projectId },
+        where: { projectId, number: { in: parsedNumbers } },
         select: { id: true, type: true, number: true },
       })
       const existingMap = new Map(existingItems.map(i => [`${i.type}:${i.number}`, i.id]))
@@ -284,16 +286,6 @@ export async function POST(req: NextRequest) {
       items: createdItems,
       schedules: createdSchedules,
       errors: parseResult.errors,
-      // DEBUG — ลบออกหลัง diagnose เสร็จ
-      _debug: {
-        parsedItemCount: parseResult.items.length,
-        totalScheduleDays: parseResult.items.reduce((s, i) => s + i.scheduleDays.length, 0),
-        itemsWithSchedules: parseResult.items.filter(i => i.scheduleDays.length > 0).length,
-        sample: parseResult.items.slice(0, 3).map(i => ({
-          name: i.name, number: i.number, scheduleDays: i.scheduleDays,
-        })),
-        parseErrors: parseResult.errors,
-      },
     })
   } catch (error: unknown) {
     const msg = error instanceof Error ? error.message : 'Unknown error'
