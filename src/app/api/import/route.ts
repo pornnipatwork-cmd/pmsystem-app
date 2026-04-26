@@ -82,58 +82,74 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: reason }, { status: 422 })
     }
 
-    // Upsert PM Items (ทีละรายการ — ต้องการ id กลับมาสำหรับ schedule)
+    // Upsert PM Items แบบ parallel batch (10 พร้อมกัน) — เร็วกว่า sequential มาก
     let createdItems = 0
     const scheduleRows: { pmItemId: string; scheduledDate: Date; status: string }[] = []
+    const ITEM_BATCH = 10
 
-    for (const item of parseResult.items) {
-      const pmItem = await prisma.pMItem.upsert({
-        where: { projectId_type_number: { projectId, type: item.type, number: item.number } },
-        create: {
-          projectId,
-          importedFileId: importFile.id,
-          type: item.type,
-          category: item.category,
-          subCategory: item.subCategory,
-          no: item.no,
-          name: item.name,
-          number: item.number,
-          location: item.location,
-          period: item.period,
-        },
-        update: {
-          category: item.category,
-          subCategory: item.subCategory,
-          name: item.name,
-          location: item.location,
-          period: item.period,
-        },
-      })
-      createdItems++
+    for (let i = 0; i < parseResult.items.length; i += ITEM_BATCH) {
+      const batch = parseResult.items.slice(i, i + ITEM_BATCH)
+      const upsertedItems = await Promise.all(
+        batch.map(item =>
+          prisma.pMItem.upsert({
+            where: { projectId_type_number: { projectId, type: item.type, number: item.number } },
+            create: {
+              projectId,
+              importedFileId: importFile.id,
+              type: item.type,
+              category: item.category,
+              subCategory: item.subCategory,
+              no: item.no,
+              name: item.name,
+              number: item.number,
+              location: item.location,
+              period: item.period,
+            },
+            update: {
+              category: item.category,
+              subCategory: item.subCategory,
+              name: item.name,
+              location: item.location,
+              period: item.period,
+            },
+          })
+        )
+      )
+      createdItems += upsertedItems.length
 
-      // รวบรวม schedule data สำหรับ batch insert
-      for (const day of item.scheduleDays) {
-        const scheduledDate = new Date(Date.UTC(year, month - 1, day))
-        const status = calculateStatus({ scheduledDate })
-        scheduleRows.push({ pmItemId: pmItem.id, scheduledDate, status })
+      // รวบรวม schedule rows พร้อม pmItem.id ที่ได้กลับมา
+      for (let j = 0; j < batch.length; j++) {
+        const item = batch[j]
+        const pmItem = upsertedItems[j]
+        for (const day of item.scheduleDays) {
+          const scheduledDate = new Date(Date.UTC(year, month - 1, day))
+          const status = calculateStatus({ scheduledDate })
+          scheduleRows.push({ pmItemId: pmItem.id, scheduledDate, status })
+        }
       }
     }
 
-    // Batch insert schedules ด้วย INSERT OR IGNORE (ไม่ทับข้อมูลที่ check-in แล้ว)
+    // Upsert PMSchedules แบบ parallel batch (30 พร้อมกัน) — ไม่ทับข้อมูล check-in เดิม
     let createdSchedules = 0
-    if (scheduleRows.length > 0) {
-      // แบ่งเป็น chunk เพื่อไม่ให้ query ยาวเกินไป
-      const CHUNK = 50
-      for (let i = 0; i < scheduleRows.length; i += CHUNK) {
-        const chunk = scheduleRows.slice(i, i + CHUNK)
-        const placeholders = chunk.map(() => '(?, ?, ?)').join(', ')
-        const values = chunk.flatMap(r => [r.pmItemId, r.scheduledDate.toISOString(), r.status])
-        await prisma.$executeRawUnsafe(
-          `INSERT OR IGNORE INTO PMSchedule (id, pmItemId, scheduledDate, status) SELECT lower(hex(randomblob(4)))||'-'||lower(hex(randomblob(2)))||'-4'||substr(lower(hex(randomblob(2))),2)||'-'||substr('89ab',abs(random())%4+1,1)||substr(lower(hex(randomblob(2))),2)||'-'||lower(hex(randomblob(6))), t.a, t.b, t.c FROM (VALUES ${placeholders}) AS t(a,b,c)`,
-          ...values
+    const SCHEDULE_BATCH = 30
+
+    for (let i = 0; i < scheduleRows.length; i += SCHEDULE_BATCH) {
+      const batch = scheduleRows.slice(i, i + SCHEDULE_BATCH)
+      await Promise.all(
+        batch.map(row =>
+          prisma.pMSchedule.upsert({
+            where: {
+              pmItemId_scheduledDate: {
+                pmItemId: row.pmItemId,
+                scheduledDate: row.scheduledDate,
+              },
+            },
+            create: { pmItemId: row.pmItemId, scheduledDate: row.scheduledDate, status: row.status },
+            update: {}, // ไม่ทับ status / photoUrl ที่ check-in แล้ว
+          })
         )
-        createdSchedules += chunk.length
-      }
+      )
+      createdSchedules += batch.length
     }
 
     await prisma.importFile.update({
