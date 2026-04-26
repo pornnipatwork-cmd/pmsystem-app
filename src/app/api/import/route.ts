@@ -1,3 +1,4 @@
+import crypto from 'crypto'
 import { NextRequest, NextResponse } from 'next/server'
 import { getServerSession } from 'next-auth'
 import { authOptions } from '@/lib/auth'
@@ -82,10 +83,10 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: reason }, { status: 422 })
     }
 
-    // Upsert PM Items แบบ parallel batch (10 พร้อมกัน) — เร็วกว่า sequential มาก
+    // ── PMItems: parallel batch 20 (เร็วกว่า sequential ~6x) ──────────────
     let createdItems = 0
     const scheduleRows: { pmItemId: string; scheduledDate: Date; status: string }[] = []
-    const ITEM_BATCH = 10
+    const ITEM_BATCH = 20
 
     for (let i = 0; i < parseResult.items.length; i += ITEM_BATCH) {
       const batch = parseResult.items.slice(i, i + ITEM_BATCH)
@@ -117,7 +118,6 @@ export async function POST(req: NextRequest) {
       )
       createdItems += upsertedItems.length
 
-      // รวบรวม schedule rows พร้อม pmItem.id ที่ได้กลับมา
       for (let j = 0; j < batch.length; j++) {
         const item = batch[j]
         const pmItem = upsertedItems[j]
@@ -129,27 +129,74 @@ export async function POST(req: NextRequest) {
       }
     }
 
-    // Upsert PMSchedules แบบ parallel batch (30 พร้อมกัน) — ไม่ทับข้อมูล check-in เดิม
+    // ── PMSchedules: Turso Pipeline API (INSERT OR IGNORE ทั้งหมดใน 1-2 HTTP call) ──
+    // เร็วกว่า Prisma upsert loop มาก — 3000 rows ส่งใน ~3 HTTP requests แทน 3000 requests
     let createdSchedules = 0
-    const SCHEDULE_BATCH = 30
 
-    for (let i = 0; i < scheduleRows.length; i += SCHEDULE_BATCH) {
-      const batch = scheduleRows.slice(i, i + SCHEDULE_BATCH)
-      await Promise.all(
-        batch.map(row =>
-          prisma.pMSchedule.upsert({
-            where: {
-              pmItemId_scheduledDate: {
-                pmItemId: row.pmItemId,
-                scheduledDate: row.scheduledDate,
-              },
+    if (scheduleRows.length > 0) {
+      const isTurso = !!process.env.TURSO_DATABASE_URL
+
+      if (isTurso) {
+        // Production (Turso): ใช้ HTTP pipeline API
+        const tursoUrl = process.env.TURSO_DATABASE_URL!.replace('libsql://', 'https://')
+        const tursoToken = process.env.TURSO_AUTH_TOKEN!
+        const PIPELINE_CHUNK = 500 // 500 statements ต่อ HTTP call
+
+        for (let i = 0; i < scheduleRows.length; i += PIPELINE_CHUNK) {
+          const chunk = scheduleRows.slice(i, i + PIPELINE_CHUNK)
+
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          const requests: any[] = chunk.map(row => ({
+            type: 'execute',
+            stmt: {
+              sql: 'INSERT OR IGNORE INTO PMSchedule (id, pmItemId, scheduledDate, status) VALUES (?, ?, ?, ?)',
+              args: [
+                { type: 'text', value: crypto.randomUUID() },
+                { type: 'text', value: row.pmItemId },
+                { type: 'text', value: row.scheduledDate.toISOString() },
+                { type: 'text', value: row.status },
+              ],
             },
-            create: { pmItemId: row.pmItemId, scheduledDate: row.scheduledDate, status: row.status },
-            update: {}, // ไม่ทับ status / photoUrl ที่ check-in แล้ว
+          }))
+          requests.push({ type: 'close' })
+
+          const res = await fetch(`${tursoUrl}/v2/pipeline`, {
+            method: 'POST',
+            headers: {
+              Authorization: `Bearer ${tursoToken}`,
+              'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({ requests }),
           })
-        )
-      )
-      createdSchedules += batch.length
+
+          if (!res.ok) {
+            const errText = await res.text()
+            throw new Error(`Turso pipeline error: ${errText}`)
+          }
+          createdSchedules += chunk.length
+        }
+      } else {
+        // Local dev (SQLite): Prisma upsert batch (no network latency → ไม่เป็นปัญหา)
+        const SCHEDULE_BATCH = 50
+        for (let i = 0; i < scheduleRows.length; i += SCHEDULE_BATCH) {
+          const batch = scheduleRows.slice(i, i + SCHEDULE_BATCH)
+          await Promise.all(
+            batch.map(row =>
+              prisma.pMSchedule.upsert({
+                where: {
+                  pmItemId_scheduledDate: {
+                    pmItemId: row.pmItemId,
+                    scheduledDate: row.scheduledDate,
+                  },
+                },
+                create: { pmItemId: row.pmItemId, scheduledDate: row.scheduledDate, status: row.status },
+                update: {}, // ไม่ทับ status / photoUrl ที่ check-in แล้ว
+              })
+            )
+          )
+          createdSchedules += batch.length
+        }
+      }
     }
 
     await prisma.importFile.update({
