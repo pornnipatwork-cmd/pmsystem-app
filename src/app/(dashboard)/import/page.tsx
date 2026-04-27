@@ -209,7 +209,9 @@ export default function ImportPage() {
                     {(pf.result.eeItems !== undefined || pf.result.meItems !== undefined) && (
                       <span className="text-pm-text-3"> (EE: {pf.result.eeItems ?? '?'}, ME: {pf.result.meItems ?? '?'})</span>
                     )}
-                    {' '}· {pf.result.schedules} ตาราง
+                    {pf.result.schedules > 0 && (
+                      <span className="text-pm-text-3"> · {pf.result.schedules} ตาราง</span>
+                    )}
                   </div>
                 )}
                 {pf.warnings && pf.warnings.map((w, wi) => (

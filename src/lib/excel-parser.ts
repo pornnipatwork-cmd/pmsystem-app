@@ -349,6 +349,7 @@ function parseSheet(
     }
 
     if (scheduleDays.length === 0 && dateCols.length > 0) {
+      // Level 2: ตรวจ cell.h (HTML) และ cell.r (rich text) ด้วย
       for (const { col, day } of dateCols) {
         const cellAddr = XLSX.utils.encode_cell({ r, c: col })
         const cell = sheet[cellAddr]
@@ -361,6 +362,28 @@ function parseSheet(
             }
           }
         }
+      }
+    }
+
+    if (scheduleDays.length === 0 && dateCols.length > 0) {
+      // ── Level 3: Nuclear fallback ──────────────────────────────────────────
+      // ถ้า Level 1 และ 2 ยังได้ 0 → ถือว่า ANY truthy non-zero value = bullet
+      // ครอบคลุม Wingdings font และ format แปลกๆ ที่ isBullet() จับไม่ได้
+      for (const { col, day } of dateCols) {
+        const cellAddr = XLSX.utils.encode_cell({ r, c: col })
+        const cell = sheet[cellAddr]
+        if (cell) {
+          const v = cell.v
+          const w = cell.w
+          if ((v != null && v !== '' && v !== 0 && v !== false) ||
+              (w != null && w !== '' && w !== '0' && w !== 'false')) {
+            scheduleDays.push(day)
+          }
+        }
+      }
+      // Log เมื่อ nuclear fallback ใช้งานกับ item แรก
+      if (scheduleDays.length > 0 && items.length === 0) {
+        console.log(`[parseSheet ${type}] nuclear fallback triggered row=${r + 1} scheduleDays=${scheduleDays.length}`)
       }
     }
 
