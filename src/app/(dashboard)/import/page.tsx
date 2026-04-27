@@ -15,6 +15,7 @@ interface PendingFile {
   status: 'pending' | 'uploading' | 'success' | 'error'
   error?: string
   result?: { items: number; schedules: number }
+  warnings?: string[]
 }
 
 function extractMonthYear(filename: string): { month: number; year: number } | null {
@@ -87,7 +88,12 @@ export default function ImportPage() {
         const data = await res.json()
         if (res.ok) {
           setPendingFiles(prev => prev.map((f, idx) =>
-            idx === i ? { ...f, status: 'success', result: { items: data.items, schedules: data.schedules } } : f
+            idx === i ? {
+              ...f,
+              status: 'success',
+              result: { items: data.items, schedules: data.schedules },
+              warnings: data.errors?.length > 0 ? data.errors : undefined,
+            } : f
           ))
         } else {
           setPendingFiles(prev => prev.map((f, idx) =>
@@ -202,6 +208,9 @@ export default function ImportPage() {
                     ✓ {pf.result.items} รายการ, {pf.result.schedules} ตาราง
                   </div>
                 )}
+                {pf.warnings && pf.warnings.map((w, wi) => (
+                  <div key={wi} className="text-[10px] text-amber-600 mt-0.5">⚠ {w}</div>
+                ))}
                 {pf.error && <div className="text-[11px] text-danger mt-0.5">✗ {pf.error}</div>}
               </div>
               <div className="flex-shrink-0 text-right">

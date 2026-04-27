@@ -212,9 +212,10 @@ function parseSheet(
   if (locationCol < 0) locationCol = noCol + 3
   if (periodCol < 0) periodCol = noCol + 4
 
-  // หาวันที่ (1-31)
+  // หาวันที่ (1-31) — ค้นหาในช่วง 6 แถวหลัง header (เผื่อ Excel มี sub-header หลายชั้น)
   let dateRowIdx = headerRowIdx
-  for (let checkRow = headerRowIdx; checkRow <= Math.min(headerRowIdx + 2, maxRow); checkRow++) {
+  const DATE_SEARCH_ROWS = 6
+  for (let checkRow = headerRowIdx; checkRow <= Math.min(headerRowIdx + DATE_SEARCH_ROWS, maxRow); checkRow++) {
     const found: { col: number; day: number }[] = []
     for (let c = periodCol + 1; c <= maxCol; c++) {
       const rawCell = sheet[XLSX.utils.encode_cell({ r: checkRow, c })]
@@ -238,7 +239,8 @@ function parseSheet(
   }
 
   if (dateCols.length === 0) {
-    for (let checkRow = headerRowIdx; checkRow <= Math.min(headerRowIdx + 2, maxRow); checkRow++) {
+    // Fallback: ค้นหาทุก column (ไม่จำกัด periodCol+1)
+    for (let checkRow = headerRowIdx; checkRow <= Math.min(headerRowIdx + DATE_SEARCH_ROWS, maxRow); checkRow++) {
       for (let c = 0; c <= maxCol; c++) {
         const rawCell = sheet[XLSX.utils.encode_cell({ r: checkRow, c })]
         if (!rawCell) continue
@@ -255,6 +257,13 @@ function parseSheet(
       }
       if (dateCols.length >= 20) { dateRowIdx = checkRow; break }
     }
+  }
+
+  // ── Debug: เตือนเมื่อหาวันที่ไม่เจอ ─────────────────────────────────────────
+  if (dateCols.length === 0) {
+    result.errors.push(
+      `Sheet ${type}: ไม่พบคอลัมน์วันที่ (1-31) ใน ${DATE_SEARCH_ROWS + 1} แถวหลัง header (row ${headerRowIdx + 1}) — ตาราง PM จะไม่มีวันกำหนด`
+    )
   }
 
   const dataStartRow = dateRowIdx + 1
@@ -346,6 +355,16 @@ function parseSheet(
       period,
       scheduleDays,
     })
+  }
+
+  // ── Debug: เตือนเมื่อ parse ได้ item แต่ไม่มี scheduleDays ─────────────────────
+  if (items.length > 0) {
+    const withSched = items.filter(i => i.scheduleDays.length > 0).length
+    if (withSched === 0) {
+      result.errors.push(
+        `Sheet ${type}: พบ ${items.length} รายการ แต่ไม่มีเครื่องหมาย ● เลย (dateCols=${dateCols.length}, dateRow=${dateRowIdx + 1}, headerRow=${headerRowIdx + 1}) — ตรวจสอบรูปแบบไฟล์`
+      )
+    }
   }
 
   return items
