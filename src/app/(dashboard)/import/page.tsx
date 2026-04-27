@@ -254,7 +254,7 @@ export default function ImportPage() {
                   <tr key={h.id} className="border-t border-pm-border hover:bg-pm-bg">
                     <td className="px-4 py-2.5 text-pm-text max-w-[180px] truncate">{h.fileName}</td>
                     <td className="px-4 py-2.5 text-pm-text-2 whitespace-nowrap">{THAI_MONTHS[h.month - 1]} {h.year}</td>
-                    <td className="px-4 py-2.5 text-pm-text-2">{h.scheduleCount ?? '-'} ตาราง</td>
+                    <td className="px-4 py-2.5 text-pm-text-2">{h.itemCount ?? '-'} รายการ</td>
                     <td className="px-4 py-2.5 text-pm-text-2">{h.importedBy?.name}</td>
                     <td className="px-4 py-2.5 text-pm-text-2 whitespace-nowrap">
                       {new Date(h.importedAt).toLocaleDateString('th-TH', {

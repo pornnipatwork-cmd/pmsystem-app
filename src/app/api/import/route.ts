@@ -33,6 +33,15 @@ async function tursoPipeline(
     const text = await res.text()
     throw new Error(`Turso pipeline error (${res.status}): ${text}`)
   }
+  // ตรวจ per-statement errors (HTTP 200 แต่มี statement ล้มเหลว เช่น UNIQUE constraint)
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const data = await res.json() as { results?: { type: string; error?: { message: string } }[] }
+  const stmtErrors = (data.results ?? [])
+    .filter(r => r.type === 'error')
+    .map(r => r.error?.message ?? 'unknown statement error')
+  if (stmtErrors.length > 0) {
+    throw new Error(`Turso statement errors: ${stmtErrors.join(' | ')}`)
+  }
 }
 
 // Turso HTTP API ต้องการ value เป็น string เสมอ (แม้ type จะเป็น integer)
@@ -166,7 +175,7 @@ export async function POST(req: NextRequest) {
         for (const ci of chunk) {
           if (ci.isNew) {
             stmts.push({
-              sql: 'INSERT INTO PMItem (id, projectId, importedFileId, type, category, subCategory, no, name, number, location, period) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+              sql: 'INSERT OR IGNORE INTO PMItem (id, projectId, importedFileId, type, category, subCategory, no, name, number, location, period) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
               args: [
                 tv(ci.pmItemId), tv(projectId), tv(importFile.id),
                 tv(ci.type), tv(ci.category), tv(ci.subCategory),
