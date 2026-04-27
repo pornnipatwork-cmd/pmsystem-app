@@ -18,6 +18,8 @@ export interface ParseResult {
   year: number
   items: ParsedPMItem[]
   errors: string[]
+  eeItems: number
+  meItems: number
 }
 
 // ตรวจจับสัญลักษณ์ ● และ variants ต่างๆ
@@ -55,6 +57,8 @@ export async function parseExcelFile(
     year: 0,
     items: [],
     errors: [],
+    eeItems: 0,
+    meItems: 0,
   }
 
   let workbook: XLSX.WorkBook
@@ -85,6 +89,11 @@ export async function parseExcelFile(
     const items = parseSheet(sheet, sheetType, result)
     result.items.push(...items)
   }
+
+  // นับ EE/ME items แยกกัน
+  result.eeItems = result.items.filter(i => i.type === 'EE').length
+  result.meItems = result.items.filter(i => i.type === 'ME').length
+  console.log(`[parseExcelFile] total=${result.items.length} EE=${result.eeItems} ME=${result.meItems} errors=${result.errors.length}`)
 
   if (result.month === 0) {
     const now = new Date()
@@ -259,7 +268,9 @@ function parseSheet(
     }
   }
 
-  // ── Debug: เตือนเมื่อหาวันที่ไม่เจอ ─────────────────────────────────────────
+  // ── Debug: log โครงสร้าง sheet เพื่อดูใน Vercel logs ──────────────────────────
+  console.log(`[parseSheet ${type}] headerRow=${headerRowIdx + 1} dateRow=${dateRowIdx + 1} dateCols=${dateCols.length} sampleDays=[${dateCols.slice(0, 5).map(d => d.day).join(',')}] noCol=${noCol} periodCol=${periodCol}`)
+
   if (dateCols.length === 0) {
     result.errors.push(
       `Sheet ${type}: ไม่พบคอลัมน์วันที่ (1-31) ใน ${DATE_SEARCH_ROWS + 1} แถวหลัง header (row ${headerRowIdx + 1}) — ตาราง PM จะไม่มีวันกำหนด`
@@ -317,6 +328,15 @@ function parseSheet(
     const period = inferPeriod(periodRaw || currentCategory)
 
     if (!name) continue
+
+    // ── Debug: log raw cell ของ 3 date columns แรกสำหรับ item แรก ──────────────
+    if (items.length === 0 && dateCols.length > 0) {
+      const sampleCells = dateCols.slice(0, 3).map(({ col, day }) => {
+        const cell = sheet[XLSX.utils.encode_cell({ r, c: col })]
+        return `day${day}:{v=${JSON.stringify(cell?.v)},w=${JSON.stringify(cell?.w)},t=${cell?.t}}`
+      })
+      console.log(`[parseSheet ${type}] firstItemRow=${r + 1} sampleCells=${sampleCells.join(' | ')}`)
+    }
 
     // ตรวจสอบวันที่มี ●
     const scheduleDays: number[] = []

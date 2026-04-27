@@ -14,7 +14,7 @@ interface PendingFile {
   year?: number
   status: 'pending' | 'uploading' | 'success' | 'error'
   error?: string
-  result?: { items: number; schedules: number }
+  result?: { items: number; schedules: number; eeItems?: number; meItems?: number }
   warnings?: string[]
 }
 
@@ -91,7 +91,7 @@ export default function ImportPage() {
             idx === i ? {
               ...f,
               status: 'success',
-              result: { items: data.items, schedules: data.schedules },
+              result: { items: data.items, schedules: data.schedules, eeItems: data.eeItems, meItems: data.meItems },
               warnings: data.errors?.length > 0 ? data.errors : undefined,
             } : f
           ))
@@ -205,7 +205,11 @@ export default function ImportPage() {
                 </div>
                 {pf.result && (
                   <div className="text-[11px] text-accent mt-0.5">
-                    ✓ {pf.result.items} รายการ, {pf.result.schedules} ตาราง
+                    ✓ {pf.result.items} รายการ
+                    {(pf.result.eeItems !== undefined || pf.result.meItems !== undefined) && (
+                      <span className="text-pm-text-3"> (EE: {pf.result.eeItems ?? '?'}, ME: {pf.result.meItems ?? '?'})</span>
+                    )}
+                    {' '}· {pf.result.schedules} ตาราง
                   </div>
                 )}
                 {pf.warnings && pf.warnings.map((w, wi) => (

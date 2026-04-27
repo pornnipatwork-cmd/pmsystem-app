@@ -289,6 +289,8 @@ export async function POST(req: NextRequest) {
       importFileId: importFile.id,
       items: createdItems,
       schedules: createdSchedules,
+      eeItems: parseResult.eeItems,
+      meItems: parseResult.meItems,
       errors: parseResult.errors,
     })
   } catch (error: unknown) {
