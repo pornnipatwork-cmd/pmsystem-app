@@ -95,9 +95,24 @@ export default function ImportPage() {
           ))
         }
       } catch {
-        setPendingFiles(prev => prev.map((f, idx) =>
-          idx === i ? { ...f, status: 'error', error: 'เกิดข้อผิดพลาด' } : f
-        ))
+        // fetch ถูก kill (Vercel timeout 60s) — ข้อมูลอาจถูก commit สำเร็จแล้ว
+        // รอ 5 วินาที แล้วตรวจสอบ import history ว่าสำเร็จหรือไม่
+        await new Promise(resolve => setTimeout(resolve, 5000))
+        const freshHistory = await mutateHistory()
+        const matched = Array.isArray(freshHistory)
+          ? freshHistory.find((h: { fileName: string; status: string; scheduleCount?: number; itemCount?: number }) =>
+              h.fileName === pf.file.name && h.status === 'SUCCESS'
+            )
+          : null
+        if (matched) {
+          setPendingFiles(prev => prev.map((f, idx) =>
+            idx === i ? { ...f, status: 'success', result: { items: matched.itemCount ?? 0, schedules: matched.scheduleCount ?? 0 } } : f
+          ))
+        } else {
+          setPendingFiles(prev => prev.map((f, idx) =>
+            idx === i ? { ...f, status: 'error', error: 'เกิดข้อผิดพลาด กรุณาตรวจสอบประวัติการนำเข้า' } : f
+          ))
+        }
       }
     }
     mutateHistory()

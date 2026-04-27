@@ -117,6 +117,15 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: reason }, { status: 422 })
     }
 
+    // ── อัปเดต SUCCESS ก่อนเริ่ม pipeline ──────────────────────────────────────
+    // เหตุผล: ถ้า Vercel timeout ระหว่าง pipeline (ไฟล์ใหญ่), status จะเป็น SUCCESS แล้ว
+    // ข้อมูลที่ commit ไปแล้วจะยังอยู่ใน DB ถูกต้อง
+    // (ถ้า pipeline error จริงๆ, catch block จะเปลี่ยนกลับเป็น FAILED)
+    await prisma.importFile.update({
+      where: { id: importFile.id },
+      data: { status: 'SUCCESS' },
+    })
+
     let createdItems = 0
     let createdSchedules = 0
 
@@ -274,11 +283,6 @@ export async function POST(req: NextRequest) {
         createdSchedules += batch.length
       }
     }
-
-    await prisma.importFile.update({
-      where: { id: importFile.id },
-      data: { status: 'SUCCESS' },
-    })
 
     return NextResponse.json({
       success: true,
