@@ -25,6 +25,9 @@ const BULLET_CHARS = ['●', '•', '·', '⚫', '◉', '○', '✓', '√', 'x'
 
 function isBullet(val: unknown): boolean {
   if (val === null || val === undefined || val === '') return false
+  // Numeric non-zero = bullet mark (Excel เก็บ ● เป็น number 1 + custom number format)
+  // raw: true ทำให้ cell.w ไม่ถูก generate → cell.v คืนค่าตัวเลขดิบ
+  if (typeof val === 'number' && val !== 0) return true
   const s = String(val).trim()
   if (s === '') return false
   if (BULLET_CHARS.includes(s)) return true
@@ -60,7 +63,9 @@ export async function parseExcelFile(
     // getCellValue() ใช้ cell.w ?? cell.v → ตกไป cell.v โดยอัตโนมัติ ยังทำงานได้ปกติ
     workbook = XLSX.read(buffer, {
       type: 'buffer',
-      raw: true,
+      // ไม่ใช้ raw: true เพราะทำให้ cell.w ไม่ถูก generate
+      // Excel บางไฟล์เก็บ ● เป็น numeric value + custom format → ต้องได้ cell.w
+      // default options (ไม่มี cellText:true) เร็วกว่าเดิมเพราะไม่ force-format ทุก cell
     })
   } catch (err) {
     result.errors.push(`อ่านไฟล์ไม่ได้: ${err instanceof Error ? err.message : String(err)}`)
