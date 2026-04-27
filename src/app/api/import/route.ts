@@ -141,7 +141,7 @@ export async function POST(req: NextRequest) {
 
       // ── Step 1: ดึงเฉพาะ PMItem ที่ number ตรงกับไฟล์ (ลด response size 10-100x) ──
       // ใช้ number IN (...) แทนการดึง ALL items ของ project
-      const parsedNumbers = [...new Set(parseResult.items.map(i => i.number))]
+      const parsedNumbers = Array.from(new Set(parseResult.items.map(i => i.number)))
       const existingItems = await prisma.pMItem.findMany({
         where: { projectId, number: { in: parsedNumbers } },
         select: { id: true, type: true, number: true },
