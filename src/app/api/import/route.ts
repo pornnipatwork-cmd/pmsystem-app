@@ -148,22 +148,47 @@ export async function POST(req: NextRequest) {
       const tursoUrl = process.env.TURSO_DATABASE_URL!.replace('libsql://', 'https://')
       const tursoToken = process.env.TURSO_AUTH_TOKEN!
 
-      // ── Step 1: ดึงเฉพาะ PMItem ที่ number ตรงกับไฟล์ (ลด response size 10-100x) ──
-      // ใช้ number IN (...) แทนการดึง ALL items ของ project
-      const parsedNumbers = Array.from(new Set(parseResult.items.map(i => i.number)))
-      const existingItems = await prisma.pMItem.findMany({
-        where: { projectId, number: { in: parsedNumbers } },
-        select: { id: true, type: true, number: true },
-      })
+      // ── Step 1: ดึงเฉพาะ PMItem ที่ number ตรงกับไฟล์ ──
+      const parsedNumbers = Array.from(new Set(parseResult.items.map(i => i.number).filter(Boolean)))
+      const existingItems = parsedNumbers.length > 0
+        ? await prisma.pMItem.findMany({
+            where: { projectId, number: { in: parsedNumbers } },
+            select: { id: true, type: true, number: true },
+          })
+        : []
       const existingMap = new Map(existingItems.map(i => [`${i.type}:${i.number}`, i.id]))
 
-      // ── Step 2: กำหนด ID ให้ทุก item (ใช้ existing ID หรือ UUID ใหม่) ──
-      const classifiedItems = parseResult.items.map(item => ({
-        ...item,
-        pmItemId: existingMap.get(`${item.type}:${item.number}`) ?? crypto.randomUUID(),
-        isNew: !existingMap.has(`${item.type}:${item.number}`),
-      }))
+      // ── Step 2: กำหนด ID ให้ทุก item + แก้ duplicate number ──
+      // ปัญหา: ME sheet มักมีหลาย task ต่อเครื่องเดียว (number ซ้ำกัน)
+      // แนวทาง: ถ้า number ซ้ำกันใน type เดียวกัน ให้ append "-{no}" ให้ unique
+      const seenKeys = new Set<string>()
+      const classifiedItems = parseResult.items.map(item => {
+        let uniqueNumber = item.number
+        const baseKey = `${item.type}:${item.number}`
+
+        // ถ้า number นี้ถูกใช้แล้วใน batch นี้ (duplicate within same type)
+        // ให้ append "-{no}" เพื่อทำให้ unique
+        if (seenKeys.has(baseKey)) {
+          uniqueNumber = item.number ? `${item.number}-${item.no}` : `${item.type}-${String(item.no).padStart(3, '0')}`
+        }
+        seenKeys.add(`${item.type}:${uniqueNumber}`)
+
+        const lookupKey = `${item.type}:${uniqueNumber}`
+        return {
+          ...item,
+          number: uniqueNumber,
+          pmItemId: existingMap.get(lookupKey) ?? crypto.randomUUID(),
+          isNew: !existingMap.has(lookupKey),
+        }
+      })
       createdItems = classifiedItems.length
+
+      // Log สำหรับ debug
+      const newEE = classifiedItems.filter(i => i.type === 'EE' && i.isNew).length
+      const newME = classifiedItems.filter(i => i.type === 'ME' && i.isNew).length
+      const updEE = classifiedItems.filter(i => i.type === 'EE' && !i.isNew).length
+      const updME = classifiedItems.filter(i => i.type === 'ME' && !i.isNew).length
+      console.log(`[import] classified: EE new=${newEE} upd=${updEE} | ME new=${newME} upd=${updME}`)
 
       // ── Step 3: Turso pipeline สำหรับ PMItem INSERT/UPDATE ──
       // 300 statements ต่อ HTTP call → 150 items = 1 HTTP call เท่านั้น
@@ -197,6 +222,13 @@ export async function POST(req: NextRequest) {
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         await tursoPipeline(tursoUrl, tursoToken, stmts as any)
       }
+
+      // ── Step 3.5: ตรวจสอบจำนวน EE/ME ที่ insert จริงๆ ใน DB ──
+      const [dbEeCount, dbMeCount] = await Promise.all([
+        prisma.pMItem.count({ where: { projectId, type: 'EE' } }),
+        prisma.pMItem.count({ where: { projectId, type: 'ME' } }),
+      ])
+      console.log(`[import] DB after insert: EE=${dbEeCount} ME=${dbMeCount} (parsed EE=${parseResult.eeItems} ME=${parseResult.meItems})`)
 
       // ── Step 4: สร้าง schedule rows ──
       const scheduleRows: { pmItemId: string; scheduledDate: Date; status: string }[] = []
@@ -293,13 +325,23 @@ export async function POST(req: NextRequest) {
       }
     }
 
+    // ใช้ actual DB count แทน parsed count เพื่อให้ UI แสดงตัวเลขที่ถูกต้อง
+    const [finalEeCount, finalMeCount] = isTurso
+      ? await Promise.all([
+          prisma.pMItem.count({ where: { projectId, type: 'EE' } }),
+          prisma.pMItem.count({ where: { projectId, type: 'ME' } }),
+        ])
+      : [parseResult.eeItems, parseResult.meItems]
+
     return NextResponse.json({
       success: true,
       importFileId: importFile.id,
       items: createdItems,
       schedules: createdSchedules,
-      eeItems: parseResult.eeItems,
-      meItems: parseResult.meItems,
+      eeItems: finalEeCount,
+      meItems: finalMeCount,
+      parsedEeItems: parseResult.eeItems,
+      parsedMeItems: parseResult.meItems,
       errors: parseResult.errors,
     })
   } catch (error: unknown) {

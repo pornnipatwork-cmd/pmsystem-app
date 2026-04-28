@@ -76,13 +76,26 @@ export async function parseExcelFile(
     return result
   }
 
+  // Log ชื่อ sheet ทั้งหมดเพื่อ debug ใน Vercel logs
+  console.log(`[parseExcelFile] SheetNames=[${workbook.SheetNames.map(n => `"${n}"`).join(', ')}]`)
+
   for (const sheetType of ['EE', 'ME'] as const) {
-    const sheetName = workbook.SheetNames.find(
-      (n) => n.trim().toUpperCase() === sheetType
-    )
+    // ลำดับการค้นหาชื่อ sheet:
+    // 1. ตรงทุกอักษร "EE" / "ME"
+    // 2. ขึ้นต้นด้วย sheetType + ช่องว่าง/เครื่องหมาย (เช่น "ME Plan", "EE-Monthly")
+    // 3. มี sheetType อยู่ภายใน (เช่น "Sheet ME", "งาน EE")
+    const sheetName =
+      workbook.SheetNames.find((n) => n.trim().toUpperCase() === sheetType) ??
+      workbook.SheetNames.find((n) => /^(EE|ME)[^A-Z]/i.test(n.trim()) && n.trim().toUpperCase().startsWith(sheetType)) ??
+      workbook.SheetNames.find((n) => n.trim().toUpperCase().includes(sheetType))
+
     if (!sheetName) {
       result.errors.push(`ไม่พบ Sheet "${sheetType}" (มี sheets: ${workbook.SheetNames.join(', ')})`)
       continue
+    }
+
+    if (sheetName.trim().toUpperCase() !== sheetType) {
+      console.log(`[parseExcelFile] Sheet "${sheetType}" matched as "${sheetName}" (partial match)`)
     }
 
     const sheet = workbook.Sheets[sheetName]
@@ -93,7 +106,13 @@ export async function parseExcelFile(
   // นับ EE/ME items แยกกัน
   result.eeItems = result.items.filter(i => i.type === 'EE').length
   result.meItems = result.items.filter(i => i.type === 'ME').length
+
+  // Log sample numbers ของ ME items เพื่อตรวจ duplicate
+  const meItems = result.items.filter(i => i.type === 'ME')
+  const meNumbers = meItems.map(i => i.number)
+  const meUniqueNumbers = new Set(meNumbers)
   console.log(`[parseExcelFile] total=${result.items.length} EE=${result.eeItems} ME=${result.meItems} errors=${result.errors.length}`)
+  console.log(`[parseExcelFile] ME numbers: unique=${meUniqueNumbers.size}/${meNumbers.length} sample=[${meNumbers.slice(0, 5).join(', ')}]`)
 
   if (result.month === 0) {
     const now = new Date()
