@@ -22,6 +22,25 @@ interface SubCatComment {
   updatedAt: string
 }
 
+// PM item พร้อม schedules ของเดือนนั้น (จาก /api/pm-items)
+interface PMItemWithMonthSchedules {
+  id: string
+  type: string
+  category: string
+  subCategory?: string | null
+  no: number
+  name: string
+  number: string
+  location?: string | null
+  period: string
+  schedules: { id: string; scheduledDate: string; status: string }[]
+}
+
+const PERIOD_LABEL: Record<string, string> = {
+  DAILY: 'รายวัน', WEEKLY: 'รายสัปดาห์', MONTHLY: 'รายเดือน',
+  QUARTERLY: 'ราย 3 เดือน', YEARLY: 'รายปี',
+}
+
 const STATUS_LABELS: Record<string, { label: string; color: string }> = {
   TODAY: { label: 'วันนี้', color: 'bg-info-light text-info border-blue-200' },
   UPCOMING: { label: 'รอตรวจ', color: 'bg-pm-bg text-pm-text-2 border-pm-border' },
@@ -58,6 +77,34 @@ export default function SchedulePage() {
       : null,
     fetcher
   )
+
+  // ดึง PM items ทั้งหมด (พร้อม schedules ของเดือน) เพื่อหา items ที่ไม่มีกำหนดการ
+  const { data: allPMItems } = useSWR<PMItemWithMonthSchedules[]>(
+    currentProjectId
+      ? `/api/pm-items?projectId=${currentProjectId}&month=${month}&year=${year}`
+      : null,
+    fetcher
+  )
+
+  // Items ที่ไม่มี schedule ในเดือนนี้ — filter ตาม typeFilter
+  const itemsNoSched = useMemo(() => {
+    if (!Array.isArray(allPMItems)) return []
+    return allPMItems.filter(item =>
+      item.schedules.length === 0 &&
+      (typeFilter === 'ALL' || item.type === typeFilter)
+    )
+  }, [allPMItems, typeFilter])
+
+  // จัดกลุ่ม items ที่ไม่มี schedule: type__category → items
+  const groupedNoSched = useMemo(() => {
+    const map: Record<string, { type: string; category: string; items: PMItemWithMonthSchedules[] }> = {}
+    for (const item of itemsNoSched) {
+      const key = `${item.type}__${item.category}`
+      if (!map[key]) map[key] = { type: item.type, category: item.category, items: [] }
+      map[key].items.push(item)
+    }
+    return map
+  }, [itemsNoSched])
 
   const { data: commentsData, mutate: mutateComments } = useSWR<SubCatComment[]>(
     currentProjectId
@@ -227,9 +274,9 @@ export default function SchedulePage() {
       {/* Schedule list */}
       {isLoading ? (
         <div className="bg-pm-card rounded-lg border border-pm-border p-8 text-center text-pm-text-3">กำลังโหลด...</div>
-      ) : filtered.length === 0 ? (
+      ) : filtered.length === 0 && itemsNoSched.length === 0 ? (
         <div className="bg-pm-card rounded-lg border border-pm-border p-8 text-center text-pm-text-3">ไม่พบรายการ</div>
-      ) : (
+      ) : filtered.length === 0 && itemsNoSched.length > 0 ? null : (
         Object.entries(grouped).map(([catKey, { type, category, subGroups }]) => {
           const totalItems = Object.values(subGroups).reduce((n, arr) => n + arr.length, 0)
           return (
@@ -349,6 +396,40 @@ export default function SchedulePage() {
             </div>
           )
         })
+      )}
+
+      {/* ── รายการที่ไม่มีกำหนดการในเดือนนี้ ────────────────────────────────────── */}
+      {itemsNoSched.length > 0 && (
+        <div className="mt-3">
+          <div className="px-1 pb-2 text-[11px] text-pm-text-3 font-medium uppercase tracking-wide">
+            ไม่มีกำหนดการในเดือนนี้ ({itemsNoSched.length} รายการ)
+          </div>
+          {Object.entries(groupedNoSched).map(([catKey, { type, category, items }]) => (
+            <div key={catKey} className="bg-pm-card rounded-lg border border-pm-border mb-3 overflow-hidden opacity-70">
+              {/* Category header */}
+              <div className="px-3 md:px-4 py-2.5 bg-pm-muted border-b border-pm-border flex items-center gap-2">
+                <span className={`text-[11px] font-medium px-1.5 py-0.5 rounded ${type === 'EE' ? 'bg-blue-100 text-pm-ee' : 'bg-purple-100 text-pm-me'}`}>{type}</span>
+                <span className="text-[12px] md:text-[13px] font-semibold text-pm-text uppercase tracking-wide">{category}</span>
+                <span className="text-[11px] text-pm-text-3">({items.length})</span>
+                <span className="ml-auto text-[10px] text-pm-text-3 bg-pm-bg px-2 py-0.5 rounded-full border border-pm-border">ไม่มีกำหนดการ</span>
+              </div>
+              {/* Items */}
+              {items.map(item => (
+                <div key={item.id} className="flex items-center gap-2 md:gap-3 px-3 md:px-4 py-2.5 border-b border-pm-border last:border-0">
+                  <div className="w-5 md:w-6 text-[11px] text-pm-text-3 text-right flex-shrink-0">{item.no}.</div>
+                  <div className="flex-1 min-w-0">
+                    <div className="flex flex-wrap items-center gap-1.5">
+                      <span className="text-[12px] md:text-[13px] text-pm-text-2">{fmtChemName(item.name)}</span>
+                      {item.number && <span className="text-[11px] text-pm-text-3">{item.number}</span>}
+                    </div>
+                    {item.location && <div className="text-[11px] text-pm-text-3">{item.location}</div>}
+                  </div>
+                  <span className="text-[10px] text-pm-text-3 flex-shrink-0">{PERIOD_LABEL[item.period] ?? item.period}</span>
+                </div>
+              ))}
+            </div>
+          ))}
+        </div>
       )}
     </div>
   )
