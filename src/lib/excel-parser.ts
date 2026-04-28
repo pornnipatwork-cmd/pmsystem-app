@@ -1,5 +1,126 @@
 import * as XLSX from 'xlsx'
+import { inflateRawSync } from 'zlib'
 import type { PMItemType, PMPeriod } from '@/types/pm'
+
+// ══════════════════════════════════════════════════════════════════════════════
+// xlsx Drawing Detection
+// Excel stores ● marks as "shape" drawing objects (NOT cell values).
+// We parse the drawing XML files inside the xlsx ZIP to find which cells have
+// shapes → those are the scheduled days.
+// ══════════════════════════════════════════════════════════════════════════════
+
+/** True if buffer starts with ZIP magic bytes (xlsx is a ZIP; old .xls is OLE) */
+function isZipBuffer(buf: Buffer): boolean {
+  return buf.length > 4 && buf[0] === 0x50 && buf[1] === 0x4B
+    && buf[2] === 0x03 && buf[3] === 0x04
+}
+
+/**
+ * Minimal ZIP reader — extracts specific files by path.
+ * Handles DEFLATE (method 8) and stored (method 0) compression only.
+ * Returns Map<filename, utf-8 content>. Silently ignores parse errors.
+ */
+function extractZipFiles(buf: Buffer, wanted: Set<string>): Map<string, string> {
+  const out = new Map<string, string>()
+  try {
+    // Find End of Central Directory (EOCD) signature 0x06054B50
+    let eocd = -1
+    for (let i = buf.length - 22; i >= Math.max(0, buf.length - 65558); i--) {
+      if (buf.readUInt32LE(i) === 0x06054B50) { eocd = i; break }
+    }
+    if (eocd < 0) return out
+
+    const cdOffset = buf.readUInt32LE(eocd + 16)
+    const cdCount  = buf.readUInt16LE(eocd + 10)
+
+    let pos = cdOffset
+    for (let n = 0; n < cdCount && pos + 46 < buf.length; n++) {
+      if (buf.readUInt32LE(pos) !== 0x02014B50) break  // Central dir signature
+
+      const method      = buf.readUInt16LE(pos + 10)
+      const compSize    = buf.readUInt32LE(pos + 20)
+      const nameLen     = buf.readUInt16LE(pos + 28)
+      const extraLen    = buf.readUInt16LE(pos + 30)
+      const commentLen  = buf.readUInt16LE(pos + 32)
+      const localOffset = buf.readUInt32LE(pos + 42)
+      const name        = buf.subarray(pos + 46, pos + 46 + nameLen).toString('utf8')
+      pos += 46 + nameLen + extraLen + commentLen
+
+      if (!wanted.has(name)) continue
+
+      // Local file header → actual compressed data
+      const lNameLen  = buf.readUInt16LE(localOffset + 26)
+      const lExtraLen = buf.readUInt16LE(localOffset + 28)
+      const dataStart = localOffset + 30 + lNameLen + lExtraLen
+      const compData  = buf.subarray(dataStart, dataStart + compSize)
+
+      const raw = method === 0 ? compData
+                : method === 8 ? inflateRawSync(compData)
+                : null
+      if (raw) out.set(name, raw.toString('utf8'))
+    }
+  } catch { /* drawing detection is optional — silently ignore */ }
+  return out
+}
+
+/**
+ * Parse <xdr:from> anchors in drawing XML.
+ * Returns Set of "row,col" strings (0-indexed) for every shape anchor found.
+ */
+function parseDrawingAnchors(xml: string): Set<string> {
+  const cells = new Set<string>()
+  // Match xdr:from block inside both oneCellAnchor and twoCellAnchor
+  const re = /<xdr:from>[\s\S]*?<xdr:col>(\d+)<\/xdr:col>[\s\S]*?<xdr:row>(\d+)<\/xdr:row>[\s\S]*?<\/xdr:from>/g
+  let m: RegExpExecArray | null
+  while ((m = re.exec(xml)) !== null) {
+    cells.add(`${m[2]},${m[1]}`)  // "row,col" — both 0-indexed
+  }
+  return cells
+}
+
+/**
+ * For each sheet in an xlsx workbook, find drawing anchor positions.
+ * Returns Map<sheetArrayIndex (0-based), Set<"row,col">>
+ */
+function getXlsxDrawingsBySheet(buf: Buffer, sheetCount: number): Map<number, Set<string>> {
+  const result = new Map<number, Set<string>>()
+  if (!isZipBuffer(buf)) {
+    console.log('[xlsx drawings] file is not ZIP-based (old .xls?) — skipping drawing detection')
+    return result
+  }
+
+  // Build list of files to extract from the ZIP
+  const wanted = new Set<string>()
+  for (let i = 1; i <= sheetCount + 1; i++) {
+    wanted.add(`xl/worksheets/_rels/sheet${i}.xml.rels`)
+    wanted.add(`xl/drawings/drawing${i}.xml`)
+  }
+
+  const files = extractZipFiles(buf, wanted)
+
+  for (let idx = 0; idx < sheetCount; idx++) {
+    const sheetNum   = idx + 1
+    const relsXml    = files.get(`xl/worksheets/_rels/sheet${sheetNum}.xml.rels`)
+
+    // Determine actual drawing filename via the sheet's relationship file
+    let drawingFile  = `xl/drawings/drawing${sheetNum}.xml`  // default assumption
+    if (relsXml) {
+      const m = relsXml.match(/Target="[./]*drawings\/([^"]+)"/)
+      if (m) drawingFile = `xl/drawings/${m[1]}`
+    }
+
+    const drawingXml = files.get(drawingFile)
+    if (drawingXml) {
+      const anchors = parseDrawingAnchors(drawingXml)
+      if (anchors.size > 0) {
+        result.set(idx, anchors)
+        console.log(`[xlsx drawings] sheet${sheetNum}: ${anchors.size} shape anchor(s) found → can detect ●`)
+      }
+    }
+  }
+
+  return result
+}
 
 export interface ParsedPMItem {
   type: PMItemType
@@ -79,6 +200,10 @@ export async function parseExcelFile(
   // Log ชื่อ sheet ทั้งหมดเพื่อ debug ใน Vercel logs
   console.log(`[parseExcelFile] SheetNames=[${workbook.SheetNames.map(n => `"${n}"`).join(', ')}]`)
 
+  // ── Drawing detection (Level 4) ─────────────────────────────────────────
+  // xlsx files store ● as shapes → parse drawing XML to get cell positions
+  const xlsxDrawings = getXlsxDrawingsBySheet(buffer, workbook.SheetNames.length)
+
   // ติดตาม sheet ที่ใช้แล้ว → ป้องกัน parse sheet เดิมสองครั้ง
   const usedSheetNames = new Set<string>()
 
@@ -135,7 +260,9 @@ export async function parseExcelFile(
     }
 
     const sheet = workbook.Sheets[sheetName]
-    const items = parseSheet(sheet, sheetType, result)
+    const sheetIdx = workbook.SheetNames.indexOf(sheetName)
+    const drawingPositions = xlsxDrawings.get(sheetIdx)
+    const items = parseSheet(sheet, sheetType, result, drawingPositions)
     result.items.push(...items)
   }
 
@@ -210,7 +337,8 @@ function nextMeaningfulRowIsItem(
 function parseSheet(
   sheet: XLSX.WorkSheet,
   type: PMItemType,
-  result: ParseResult
+  result: ParseResult,
+  drawingPositions?: Set<string>
 ): ParsedPMItem[] {
   const items: ParsedPMItem[] = []
 
@@ -444,6 +572,20 @@ function parseSheet(
       // Log เมื่อ nuclear fallback ใช้งานกับ item แรก
       if (scheduleDays.length > 0 && items.length === 0) {
         console.log(`[parseSheet ${type}] nuclear fallback triggered row=${r + 1} scheduleDays=${scheduleDays.length}`)
+      }
+    }
+
+    // ── Level 4: Drawing object fallback ──────────────────────────────────
+    // ● marks stored as Excel shape objects — underlying cells are empty.
+    // Use shape anchor positions parsed from drawing XML to find scheduled days.
+    if (scheduleDays.length === 0 && drawingPositions && dateCols.length > 0) {
+      for (const { col, day } of dateCols) {
+        if (drawingPositions.has(`${r},${col}`)) {
+          scheduleDays.push(day)
+        }
+      }
+      if (scheduleDays.length > 0 && items.length === 0) {
+        console.log(`[parseSheet ${type}] drawing fallback triggered row=${r + 1} days=${scheduleDays.length}`)
       }
     }
 
