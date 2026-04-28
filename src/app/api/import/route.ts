@@ -196,53 +196,60 @@ export async function POST(req: NextRequest) {
       createdSchedules = scheduleRows.length
       console.log(`[import] scheduleRows=${createdSchedules} (EE=${parseResult.eeItems} ME=${parseResult.meItems})`)
 
-      // ── Step 4: รวม item + schedule statements ทั้งหมดแล้วส่ง Turso เป็น HTTP call เดียว ──
-      // ลด network round-trips จาก 10+ เหลือ 1-2 calls → ไม่ timeout
-      // แต่ละ call ≤ 2000 statements เพื่อควบคุม payload size
-      const CHUNK_SIZE = 2000
+      // ── Step 4: Multi-row INSERT เพื่อลดจำนวน statements ให้น้อยที่สุด ──────────
+      // ปัญหาเดิม: 3214 individual INSERT statements → Turso ใช้เวลา 57+ วินาที → timeout
+      // แก้ไข: รวม N rows ต่อ INSERT statement → ลดจาก 3214 เหลือ ~50 statements
+      //   SQLite limit = 999 params/stmt → 50 rows × 11 cols = 550, 100 rows × 4 cols = 400 ✓
+      const allStmts: { sql: string; args: unknown[] }[] = []
 
-      // Build item statements
-      const itemStmts: { sql: string; args: unknown[] }[] = []
-      for (const ci of classifiedItems) {
-        if (ci.isNew) {
-          itemStmts.push({
-            sql: 'INSERT OR IGNORE INTO PMItem (id, projectId, importedFileId, type, category, subCategory, no, name, number, location, period) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
-            args: [
-              tv(ci.pmItemId), tv(projectId), tv(importFile.id),
-              tv(ci.type), tv(ci.category), tv(ci.subCategory),
-              tv(ci.no), tv(ci.name), tv(ci.number),
-              tv(ci.location), tv(ci.period),
-            ],
-          })
-        } else {
-          itemStmts.push({
-            sql: 'UPDATE PMItem SET category=?, subCategory=?, name=?, location=?, period=? WHERE id=?',
-            args: [
-              tv(ci.category), tv(ci.subCategory), tv(ci.name),
-              tv(ci.location), tv(ci.period), tv(ci.pmItemId),
-            ],
-          })
-        }
+      // ── PMItem: multi-row INSERT (50 rows/stmt) ──────────────────────────────
+      const newItems = classifiedItems.filter(ci => ci.isNew)
+      const updItems = classifiedItems.filter(ci => !ci.isNew)
+      const ITEM_BATCH = 50  // 50 × 11 cols = 550 params (< 999 limit)
+
+      for (let i = 0; i < newItems.length; i += ITEM_BATCH) {
+        const batch = newItems.slice(i, i + ITEM_BATCH)
+        const ph = batch.map(() => '(?,?,?,?,?,?,?,?,?,?,?)').join(',')
+        const args = batch.flatMap(ci => [
+          tv(ci.pmItemId), tv(projectId), tv(importFile.id),
+          tv(ci.type), tv(ci.category), tv(ci.subCategory),
+          tv(ci.no), tv(ci.name), tv(ci.number),
+          tv(ci.location), tv(ci.period),
+        ])
+        allStmts.push({
+          sql: `INSERT OR IGNORE INTO PMItem (id,projectId,importedFileId,type,category,subCategory,no,name,number,location,period) VALUES ${ph}`,
+          args,
+        })
+      }
+      // UPDATEs สำหรับ item ที่มีอยู่แล้ว (ปกติน้อยมากหรือ 0)
+      for (const ci of updItems) {
+        allStmts.push({
+          sql: 'UPDATE PMItem SET category=?,subCategory=?,name=?,location=?,period=? WHERE id=?',
+          args: [tv(ci.category),tv(ci.subCategory),tv(ci.name),tv(ci.location),tv(ci.period),tv(ci.pmItemId)],
+        })
       }
 
-      // Build schedule statements
-      const schedStmts = scheduleRows.map(row => ({
-        sql: 'INSERT OR IGNORE INTO PMSchedule (id, pmItemId, scheduledDate, status) VALUES (?, ?, ?, ?)',
-        args: [
+      // ── PMSchedule: multi-row INSERT (100 rows/stmt) ─────────────────────────
+      const SCHED_BATCH = 100  // 100 × 4 cols = 400 params (< 999 limit)
+
+      for (let i = 0; i < scheduleRows.length; i += SCHED_BATCH) {
+        const batch = scheduleRows.slice(i, i + SCHED_BATCH)
+        const ph = batch.map(() => '(?,?,?,?)').join(',')
+        const args = batch.flatMap(row => [
           tv(crypto.randomUUID()),
           tv(row.pmItemId),
           tv(row.scheduledDate.toISOString()),
           tv(row.status),
-        ],
-      }))
-
-      // ส่งเป็น chunk ≤ 2000 statements ต่อ call (item ก่อน แล้ว schedule)
-      const allStmts = [...itemStmts, ...schedStmts]
-      console.log(`[import] total statements=${allStmts.length} → ${Math.ceil(allStmts.length / CHUNK_SIZE)} HTTP call(s)`)
-      for (let i = 0; i < allStmts.length; i += CHUNK_SIZE) {
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        await tursoPipeline(tursoUrl, tursoToken, allStmts.slice(i, i + CHUNK_SIZE) as any)
+        ])
+        allStmts.push({
+          sql: `INSERT OR IGNORE INTO PMSchedule (id,pmItemId,scheduledDate,status) VALUES ${ph}`,
+          args,
+        })
       }
+
+      console.log(`[import] statements=${allStmts.length} (items:${Math.ceil(newItems.length/ITEM_BATCH)}+${updItems.length} scheds:${Math.ceil(scheduleRows.length/SCHED_BATCH)}) → 1 HTTP call`)
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      await tursoPipeline(tursoUrl, tursoToken, allStmts as any)
 
     } else {
       // ══════════════════════════════════════════════════════════════════════
