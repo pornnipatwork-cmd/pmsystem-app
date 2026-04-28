@@ -79,23 +79,59 @@ export async function parseExcelFile(
   // Log ชื่อ sheet ทั้งหมดเพื่อ debug ใน Vercel logs
   console.log(`[parseExcelFile] SheetNames=[${workbook.SheetNames.map(n => `"${n}"`).join(', ')}]`)
 
+  // ติดตาม sheet ที่ใช้แล้ว → ป้องกัน parse sheet เดิมสองครั้ง
+  const usedSheetNames = new Set<string>()
+
   for (const sheetType of ['EE', 'ME'] as const) {
-    // ลำดับการค้นหาชื่อ sheet (ปลอดภัย — ไม่จับ sheet ผิด):
+    // ลำดับการค้นหาชื่อ sheet (ปลอดภัยขึ้น — ไม่จับ sheet ผิด แต่ยืดหยุ่นพอ):
     // 1. ตรงทุกอักษร: "EE" / "ME"
     // 2. มี sheetType เป็น "คำ" (word boundary) เช่น "ME Plan", "Sheet EE", "EE/ME"
-    //    ใช้ \b ป้องกัน false match เช่น "EMERGENCY" (EM-E ไม่มี boundary ก่อน M)
-    //    หรือ "Mechanical" (ME ตามด้วยตัวอักษร ไม่ใช่ word boundary)
-    const sheetName =
-      workbook.SheetNames.find((n) => n.trim().toUpperCase() === sheetType) ??
-      workbook.SheetNames.find((n) => new RegExp(`\\b${sheetType}\\b`, 'i').test(n.trim()))
+    // 3. Keyword เฉพาะ type: ELECTRICAL/ELEC สำหรับ EE, MECHANICAL/MECH/MACHINE สำหรับ ME
+    //    ครอบคลุมชื่อ sheet เช่น "FOR ELECTRICAL & COMMUNICATION MACHINE/EQUIPMENT"
+    // 4. Last resort: sheet ที่ยังไม่ได้ใช้ (เฉพาะไฟล์ที่มี ≤3 sheets)
+
+    let sheetName: string | undefined
+
+    // ── Level 1: Exact match ───────────────────────────────────────────────
+    sheetName ??= workbook.SheetNames.find(
+      (n) => n.trim().toUpperCase() === sheetType && !usedSheetNames.has(n)
+    )
+
+    // ── Level 2: Word-boundary match ──────────────────────────────────────
+    sheetName ??= workbook.SheetNames.find(
+      (n) => new RegExp(`\\b${sheetType}\\b`, 'i').test(n.trim()) && !usedSheetNames.has(n)
+    )
+
+    // ── Level 3: Keyword match (type-specific) ────────────────────────────
+    if (!sheetName) {
+      const kwRegex = sheetType === 'EE'
+        ? /\b(ELECTRICAL|ELECTRIC|ELEC)\b/i
+        : /\b(MECHANICAL|MACHINE|MECH)\b/i
+      sheetName = workbook.SheetNames.find(
+        (n) => kwRegex.test(n.trim()) && !usedSheetNames.has(n)
+      )
+      if (sheetName) {
+        console.log(`[parseExcelFile] Sheet "${sheetType}" keyword-matched as "${sheetName}"`)
+      }
+    }
+
+    // ── Level 4: Last resort — ใช้ sheet ที่ยังไม่ได้ใช้ (ไฟล์ที่มี ≤3 sheets) ──
+    if (!sheetName && workbook.SheetNames.length <= 3) {
+      sheetName = workbook.SheetNames.find((n) => !usedSheetNames.has(n))
+      if (sheetName) {
+        console.log(`[parseExcelFile] Sheet "${sheetType}" last-resort fallback to unused sheet: "${sheetName}"`)
+      }
+    }
 
     if (!sheetName) {
       result.errors.push(`ไม่พบ Sheet "${sheetType}" (มี sheets: ${workbook.SheetNames.join(', ')})`)
       continue
     }
 
+    usedSheetNames.add(sheetName)
+
     if (sheetName.trim().toUpperCase() !== sheetType) {
-      console.log(`[parseExcelFile] Sheet "${sheetType}" matched as "${sheetName}" (word-boundary match)`)
+      console.log(`[parseExcelFile] Sheet "${sheetType}" matched as "${sheetName}"`)
     }
 
     const sheet = workbook.Sheets[sheetName]
