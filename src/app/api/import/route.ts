@@ -3,7 +3,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { getServerSession } from 'next-auth'
 import { authOptions } from '@/lib/auth'
 import { prisma } from '@/lib/prisma'
-import { canEdit, canAccessProject } from '@/lib/permissions'
+import { isAdmin, canAccessProject } from '@/lib/permissions'
 import { parseExcelFile, extractMonthYearFromFilename } from '@/lib/excel-parser'
 import { calculateStatus } from '@/lib/status'
 
@@ -55,7 +55,7 @@ function tv(value: string | number | null | undefined): any {
 
 export async function POST(req: NextRequest) {
   const session = await getServerSession(authOptions)
-  if (!session || !canEdit(session.user.role)) {
+  if (!session || !isAdmin(session.user.role)) {
     return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
   }
 

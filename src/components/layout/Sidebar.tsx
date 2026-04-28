@@ -125,7 +125,7 @@ function SidebarContent({ onNavClick }: { onNavClick?: () => void }) {
           />
         )}
 
-        {(admin || session?.user?.role === 'TECHNICIAN') && (
+        {admin && (
           <NavItem
             href="/import"
             active={pathname === '/import'}
@@ -305,7 +305,7 @@ export function BottomNav() {
         </svg>
       ),
     }] : []),
-    ...(admin || session?.user?.role === 'TECHNICIAN' ? [{
+    ...(admin ? [{
       href: '/import',
       label: 'นำเข้า',
       active: pathname === '/import',

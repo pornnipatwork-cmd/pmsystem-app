@@ -4,7 +4,7 @@ import { useState, useRef, useCallback } from 'react'
 import useSWR from 'swr'
 import { useProjectStore } from '@/store/projectStore'
 import { useSession } from 'next-auth/react'
-import { canEdit } from '@/lib/permissions'
+import { isAdmin } from '@/lib/permissions'
 
 const fetcher = (url: string) => fetch(url).then((r) => r.json())
 
@@ -37,7 +37,7 @@ const THAI_MONTHS = ['ม.ค.', 'ก.พ.', 'มี.ค.', 'เม.ย.', 'พ.
 export default function ImportPage() {
   const { currentProjectId } = useProjectStore()
   const { data: session } = useSession()
-  const editable = canEdit(session?.user?.role ?? '')
+  const editable = isAdmin(session?.user?.role ?? '')
   const [pendingFiles, setPendingFiles] = useState<PendingFile[]>([])
   const [isDragging, setIsDragging] = useState(false)
   const fileInputRef = useRef<HTMLInputElement>(null)
