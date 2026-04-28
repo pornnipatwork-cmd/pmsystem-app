@@ -142,13 +142,14 @@ export async function POST(req: NextRequest) {
 
     if (isTurso) {
       // ══════════════════════════════════════════════════════════════════════
-      // PRODUCTION PATH — Turso Pipeline API
-      // ทุก DB operation รวมเป็น 2-4 HTTP calls (ไม่ว่าจะมีกี่ item/schedule)
+      // PRODUCTION PATH — Turso Pipeline API (Single-call optimized)
+      // รวม items + schedules เป็น HTTP call เดียว → ลด latency จาก 10+ calls เหลือ 2 calls
+      // ป้องกัน Vercel 60s timeout สำหรับไฟล์ที่มี 1000+ รายการ
       // ══════════════════════════════════════════════════════════════════════
       const tursoUrl = process.env.TURSO_DATABASE_URL!.replace('libsql://', 'https://')
       const tursoToken = process.env.TURSO_AUTH_TOKEN!
 
-      // ── Step 1: ดึงเฉพาะ PMItem ที่ number ตรงกับไฟล์ ──
+      // ── Step 1: ดึงเฉพาะ PMItem ที่ number ตรงกับไฟล์ (1 DB query) ──
       const parsedNumbers = Array.from(new Set(parseResult.items.map(i => i.number).filter(Boolean)))
       const existingItems = parsedNumbers.length > 0
         ? await prisma.pMItem.findMany({
@@ -159,20 +160,14 @@ export async function POST(req: NextRequest) {
       const existingMap = new Map(existingItems.map(i => [`${i.type}:${i.number}`, i.id]))
 
       // ── Step 2: กำหนด ID ให้ทุก item + แก้ duplicate number ──
-      // ปัญหา: ME sheet มักมีหลาย task ต่อเครื่องเดียว (number ซ้ำกัน)
-      // แนวทาง: ถ้า number ซ้ำกันใน type เดียวกัน ให้ append "-{no}" ให้ unique
       const seenKeys = new Set<string>()
       const classifiedItems = parseResult.items.map(item => {
         let uniqueNumber = item.number
         const baseKey = `${item.type}:${item.number}`
-
-        // ถ้า number นี้ถูกใช้แล้วใน batch นี้ (duplicate within same type)
-        // ให้ append "-{no}" เพื่อทำให้ unique
         if (seenKeys.has(baseKey)) {
           uniqueNumber = item.number ? `${item.number}-${item.no}` : `${item.type}-${String(item.no).padStart(3, '0')}`
         }
         seenKeys.add(`${item.type}:${uniqueNumber}`)
-
         const lookupKey = `${item.type}:${uniqueNumber}`
         return {
           ...item,
@@ -183,54 +178,13 @@ export async function POST(req: NextRequest) {
       })
       createdItems = classifiedItems.length
 
-      // Log สำหรับ debug
       const newEE = classifiedItems.filter(i => i.type === 'EE' && i.isNew).length
       const newME = classifiedItems.filter(i => i.type === 'ME' && i.isNew).length
       const updEE = classifiedItems.filter(i => i.type === 'EE' && !i.isNew).length
       const updME = classifiedItems.filter(i => i.type === 'ME' && !i.isNew).length
       console.log(`[import] classified: EE new=${newEE} upd=${updEE} | ME new=${newME} upd=${updME}`)
 
-      // ── Step 3: Turso pipeline สำหรับ PMItem INSERT/UPDATE ──
-      // 300 statements ต่อ HTTP call → 150 items = 1 HTTP call เท่านั้น
-      const ITEM_CHUNK = 300
-      for (let i = 0; i < classifiedItems.length; i += ITEM_CHUNK) {
-        const chunk = classifiedItems.slice(i, i + ITEM_CHUNK)
-        const stmts: { sql: string; args: unknown[] }[] = []
-
-        for (const ci of chunk) {
-          if (ci.isNew) {
-            stmts.push({
-              sql: 'INSERT OR IGNORE INTO PMItem (id, projectId, importedFileId, type, category, subCategory, no, name, number, location, period) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
-              args: [
-                tv(ci.pmItemId), tv(projectId), tv(importFile.id),
-                tv(ci.type), tv(ci.category), tv(ci.subCategory),
-                tv(ci.no), tv(ci.name), tv(ci.number),
-                tv(ci.location), tv(ci.period),
-              ],
-            })
-          } else {
-            stmts.push({
-              sql: 'UPDATE PMItem SET category=?, subCategory=?, name=?, location=?, period=? WHERE id=?',
-              args: [
-                tv(ci.category), tv(ci.subCategory), tv(ci.name),
-                tv(ci.location), tv(ci.period), tv(ci.pmItemId),
-              ],
-            })
-          }
-        }
-
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        await tursoPipeline(tursoUrl, tursoToken, stmts as any)
-      }
-
-      // ── Step 3.5: ตรวจสอบจำนวน EE/ME ที่ insert จริงๆ ใน DB ──
-      const [dbEeCount, dbMeCount] = await Promise.all([
-        prisma.pMItem.count({ where: { projectId, type: 'EE' } }),
-        prisma.pMItem.count({ where: { projectId, type: 'ME' } }),
-      ])
-      console.log(`[import] DB after insert: EE=${dbEeCount} ME=${dbMeCount} (parsed EE=${parseResult.eeItems} ME=${parseResult.meItems})`)
-
-      // ── Step 4: สร้าง schedule rows ──
+      // ── Step 3: สร้าง schedule rows (in-memory, no DB call) ──
       const scheduleRows: { pmItemId: string; scheduledDate: Date; status: string }[] = []
       for (const ci of classifiedItems) {
         for (const day of ci.scheduleDays) {
@@ -239,24 +193,55 @@ export async function POST(req: NextRequest) {
           scheduleRows.push({ pmItemId: ci.pmItemId, scheduledDate, status })
         }
       }
+      createdSchedules = scheduleRows.length
+      console.log(`[import] scheduleRows=${createdSchedules} (EE=${parseResult.eeItems} ME=${parseResult.meItems})`)
 
-      // ── Step 5: Turso pipeline สำหรับ PMSchedule INSERT OR IGNORE ──
-      // 500 statements ต่อ HTTP call → 3000 schedules = 6 HTTP calls
-      const SCHED_CHUNK = 500
-      for (let i = 0; i < scheduleRows.length; i += SCHED_CHUNK) {
-        const chunk = scheduleRows.slice(i, i + SCHED_CHUNK)
-        const stmts = chunk.map(row => ({
-          sql: 'INSERT OR IGNORE INTO PMSchedule (id, pmItemId, scheduledDate, status) VALUES (?, ?, ?, ?)',
-          args: [
-            tv(crypto.randomUUID()),
-            tv(row.pmItemId),
-            tv(row.scheduledDate.toISOString()),
-            tv(row.status),
-          ],
-        }))
+      // ── Step 4: รวม item + schedule statements ทั้งหมดแล้วส่ง Turso เป็น HTTP call เดียว ──
+      // ลด network round-trips จาก 10+ เหลือ 1-2 calls → ไม่ timeout
+      // แต่ละ call ≤ 2000 statements เพื่อควบคุม payload size
+      const CHUNK_SIZE = 2000
+
+      // Build item statements
+      const itemStmts: { sql: string; args: unknown[] }[] = []
+      for (const ci of classifiedItems) {
+        if (ci.isNew) {
+          itemStmts.push({
+            sql: 'INSERT OR IGNORE INTO PMItem (id, projectId, importedFileId, type, category, subCategory, no, name, number, location, period) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+            args: [
+              tv(ci.pmItemId), tv(projectId), tv(importFile.id),
+              tv(ci.type), tv(ci.category), tv(ci.subCategory),
+              tv(ci.no), tv(ci.name), tv(ci.number),
+              tv(ci.location), tv(ci.period),
+            ],
+          })
+        } else {
+          itemStmts.push({
+            sql: 'UPDATE PMItem SET category=?, subCategory=?, name=?, location=?, period=? WHERE id=?',
+            args: [
+              tv(ci.category), tv(ci.subCategory), tv(ci.name),
+              tv(ci.location), tv(ci.period), tv(ci.pmItemId),
+            ],
+          })
+        }
+      }
+
+      // Build schedule statements
+      const schedStmts = scheduleRows.map(row => ({
+        sql: 'INSERT OR IGNORE INTO PMSchedule (id, pmItemId, scheduledDate, status) VALUES (?, ?, ?, ?)',
+        args: [
+          tv(crypto.randomUUID()),
+          tv(row.pmItemId),
+          tv(row.scheduledDate.toISOString()),
+          tv(row.status),
+        ],
+      }))
+
+      // ส่งเป็น chunk ≤ 2000 statements ต่อ call (item ก่อน แล้ว schedule)
+      const allStmts = [...itemStmts, ...schedStmts]
+      console.log(`[import] total statements=${allStmts.length} → ${Math.ceil(allStmts.length / CHUNK_SIZE)} HTTP call(s)`)
+      for (let i = 0; i < allStmts.length; i += CHUNK_SIZE) {
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        await tursoPipeline(tursoUrl, tursoToken, stmts as any)
-        createdSchedules += chunk.length
+        await tursoPipeline(tursoUrl, tursoToken, allStmts.slice(i, i + CHUNK_SIZE) as any)
       }
 
     } else {
@@ -325,23 +310,14 @@ export async function POST(req: NextRequest) {
       }
     }
 
-    // ใช้ actual DB count แทน parsed count เพื่อให้ UI แสดงตัวเลขที่ถูกต้อง
-    const [finalEeCount, finalMeCount] = isTurso
-      ? await Promise.all([
-          prisma.pMItem.count({ where: { projectId, type: 'EE' } }),
-          prisma.pMItem.count({ where: { projectId, type: 'ME' } }),
-        ])
-      : [parseResult.eeItems, parseResult.meItems]
-
+    // ใช้ parsed count ตรงๆ — ไม่ทำ DB query เพิ่มเพื่อลด latency
     return NextResponse.json({
       success: true,
       importFileId: importFile.id,
       items: createdItems,
       schedules: createdSchedules,
-      eeItems: finalEeCount,
-      meItems: finalMeCount,
-      parsedEeItems: parseResult.eeItems,
-      parsedMeItems: parseResult.meItems,
+      eeItems: parseResult.eeItems,
+      meItems: parseResult.meItems,
       errors: parseResult.errors,
     })
   } catch (error: unknown) {
