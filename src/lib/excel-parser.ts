@@ -80,14 +80,14 @@ export async function parseExcelFile(
   console.log(`[parseExcelFile] SheetNames=[${workbook.SheetNames.map(n => `"${n}"`).join(', ')}]`)
 
   for (const sheetType of ['EE', 'ME'] as const) {
-    // ลำดับการค้นหาชื่อ sheet:
-    // 1. ตรงทุกอักษร "EE" / "ME"
-    // 2. ขึ้นต้นด้วย sheetType + ช่องว่าง/เครื่องหมาย (เช่น "ME Plan", "EE-Monthly")
-    // 3. มี sheetType อยู่ภายใน (เช่น "Sheet ME", "งาน EE")
+    // ลำดับการค้นหาชื่อ sheet (ปลอดภัย — ไม่จับ sheet ผิด):
+    // 1. ตรงทุกอักษร: "EE" / "ME"
+    // 2. มี sheetType เป็น "คำ" (word boundary) เช่น "ME Plan", "Sheet EE", "EE/ME"
+    //    ใช้ \b ป้องกัน false match เช่น "EMERGENCY" (EM-E ไม่มี boundary ก่อน M)
+    //    หรือ "Mechanical" (ME ตามด้วยตัวอักษร ไม่ใช่ word boundary)
     const sheetName =
       workbook.SheetNames.find((n) => n.trim().toUpperCase() === sheetType) ??
-      workbook.SheetNames.find((n) => /^(EE|ME)[^A-Z]/i.test(n.trim()) && n.trim().toUpperCase().startsWith(sheetType)) ??
-      workbook.SheetNames.find((n) => n.trim().toUpperCase().includes(sheetType))
+      workbook.SheetNames.find((n) => new RegExp(`\\b${sheetType}\\b`, 'i').test(n.trim()))
 
     if (!sheetName) {
       result.errors.push(`ไม่พบ Sheet "${sheetType}" (มี sheets: ${workbook.SheetNames.join(', ')})`)
@@ -95,7 +95,7 @@ export async function parseExcelFile(
     }
 
     if (sheetName.trim().toUpperCase() !== sheetType) {
-      console.log(`[parseExcelFile] Sheet "${sheetType}" matched as "${sheetName}" (partial match)`)
+      console.log(`[parseExcelFile] Sheet "${sheetType}" matched as "${sheetName}" (word-boundary match)`)
     }
 
     const sheet = workbook.Sheets[sheetName]
@@ -240,6 +240,27 @@ function parseSheet(
   if (locationCol < 0) locationCol = noCol + 3
   if (periodCol < 0) periodCol = noCol + 4
 
+  // แปลง raw cell value เป็น day of month (1-31)
+  // รองรับ 3 format: plain number (1-31), Excel date serial (>100), string "1"/"01"
+  function toDayNum(rawVal: unknown, strVal: string): number {
+    if (typeof rawVal === 'number') {
+      if (rawVal >= 1 && rawVal <= 31) return rawVal               // plain day number
+      if (rawVal > 100) {
+        // Excel date serial (e.g. 44928 = April 1 2026)
+        // ต้องแปลง: days from Dec 30 1899 → JS UTC date
+        const d = new Date(Math.round((rawVal - 25569) * 86400000))
+        const day = d.getUTCDate()
+        if (day >= 1 && day <= 31) return day
+      }
+    }
+    // string: "1", "01", "1-Apr", "01/04" → parseInt ดึงเลขนำหน้าได้ถูกต้อง
+    // ยกเว้น "Apr 1" (ขึ้นต้นด้วยตัวอักษร) → parseInt = NaN
+    const s = strVal || String(rawVal ?? '')
+    const n = parseInt(s)
+    if (!isNaN(n) && n >= 1 && n <= 31 && /^\s*\d/.test(s)) return n
+    return -1
+  }
+
   // หาวันที่ (1-31) — ค้นหาในช่วง 6 แถวหลัง header (เผื่อ Excel มี sub-header หลายชั้น)
   let dateRowIdx = headerRowIdx
   const DATE_SEARCH_ROWS = 6
@@ -248,15 +269,7 @@ function parseSheet(
     for (let c = periodCol + 1; c <= maxCol; c++) {
       const rawCell = sheet[XLSX.utils.encode_cell({ r: checkRow, c })]
       if (!rawCell) continue
-      const rawVal = rawCell.v
-      const strVal = getCellValue(sheet, checkRow, c)
-      let dayNum = -1
-      if (typeof rawVal === 'number' && rawVal >= 1 && rawVal <= 31) {
-        dayNum = rawVal
-      } else if (typeof rawVal === 'string' || typeof strVal === 'string') {
-        const n = parseInt(strVal || String(rawVal))
-        if (!isNaN(n) && n >= 1 && n <= 31) dayNum = n
-      }
+      const dayNum = toDayNum(rawCell.v, getCellValue(sheet, checkRow, c))
       if (dayNum >= 1) found.push({ col: c, day: dayNum })
     }
     if (found.length >= 20) {
@@ -272,15 +285,7 @@ function parseSheet(
       for (let c = 0; c <= maxCol; c++) {
         const rawCell = sheet[XLSX.utils.encode_cell({ r: checkRow, c })]
         if (!rawCell) continue
-        const rawVal = rawCell.v
-        const strVal = getCellValue(sheet, checkRow, c)
-        let dayNum = -1
-        if (typeof rawVal === 'number' && rawVal >= 1 && rawVal <= 31) {
-          dayNum = rawVal
-        } else {
-          const n = parseInt(strVal)
-          if (!isNaN(n) && n >= 1 && n <= 31 && String(n) === strVal.trim()) dayNum = n
-        }
+        const dayNum = toDayNum(rawCell.v, getCellValue(sheet, checkRow, c))
         if (dayNum >= 1) dateCols.push({ col: c, day: dayNum })
       }
       if (dateCols.length >= 20) { dateRowIdx = checkRow; break }
