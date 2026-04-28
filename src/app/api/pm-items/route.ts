@@ -31,8 +31,9 @@ export async function GET(req: NextRequest) {
         where: month && year
           ? {
               scheduledDate: {
-                gte: new Date(parseInt(year), parseInt(month) - 1, 1),
-                lt: new Date(parseInt(year), parseInt(month), 1),
+                // ใช้ Date.UTC เหมือน pm-schedules API เพื่อความสอดคล้องบน Vercel (UTC server)
+                gte: new Date(Date.UTC(parseInt(year), parseInt(month) - 1, 1)),
+                lt: new Date(Date.UTC(parseInt(year), parseInt(month), 1)),
               },
             }
           : undefined,
