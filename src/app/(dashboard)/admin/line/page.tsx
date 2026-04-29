@@ -461,7 +461,7 @@ function ProjectLineCard({ project }: { project: any }) {
           <div className="text-[13px] font-semibold text-pm-text">{project.name}</div>
           <div className="text-[11px] text-pm-text-3">{project.code}</div>
         </div>
-        <span className={`text-[10px] px-2 py-0.5 rounded border ${isConfigured ? 'bg-accent-light text-accent-dark border-green-200' : 'bg-pm-bg text-pm-text-3 border-pm-border'}`}>
+        <span className={`text-[10px] px-2 py-0.5 rounded border ${isConfigured ? 'bg-green-50 text-green-700 border-green-300' : 'bg-pm-bg text-pm-text-3 border-pm-border'}`}>
           {isConfigured ? 'เปิดใช้งาน' : 'ยังไม่ตั้งค่า'}
         </span>
       </div>
