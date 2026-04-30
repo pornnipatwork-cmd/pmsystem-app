@@ -94,7 +94,7 @@ export function Topbar({ title }: { title: string }) {
             {showProjectMenu && (
               <>
                 <div className="fixed inset-0 z-10" onClick={() => setShowProjectMenu(false)} />
-                <div className="absolute right-0 top-full mt-1 w-52 bg-pm-card border border-pm-border rounded-lg shadow-lg z-20 py-1 overflow-hidden">
+                <div className="absolute right-0 top-full mt-1 w-52 bg-pm-card border border-pm-border rounded-lg shadow-lg z-20 py-1 max-h-[70vh] overflow-y-auto">
                   {projects.map((p) => (
                     <button
                       key={p.id}
