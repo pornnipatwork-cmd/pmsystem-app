@@ -1,7 +1,7 @@
 'use client'
 
 import { useState, useEffect, useCallback } from 'react'
-import SuperAdminGuard from '@/components/layout/SuperAdminGuard'
+import AdminGuard from '@/components/layout/AdminGuard'
 
 interface Project {
   id: string
@@ -568,8 +568,8 @@ function DataManagementContent() {
 
 export default function AdminDataPage() {
   return (
-    <SuperAdminGuard>
+    <AdminGuard>
       <DataManagementContent />
-    </SuperAdminGuard>
+    </AdminGuard>
   )
 }

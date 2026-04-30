@@ -5,6 +5,7 @@ import { prisma } from '@/lib/prisma'
 import ExcelJS from 'exceljs'
 import JSZip from 'jszip'
 import path from 'path'
+import { isAdmin } from '@/lib/permissions'
 
 function safeFileName(name: string): string {
   return name.replace(/[/\\:*?"<>|]/g, '_').replace(/\s+/g, '_').substring(0, 80)
@@ -32,7 +33,7 @@ async function tryFetchFile(url: string): Promise<Buffer | null> {
 
 export async function GET(req: NextRequest) {
   const session = await getServerSession(authOptions)
-  if (!session || session.user.role !== 'SUPER_ADMIN') {
+  if (!session || !isAdmin(session.user.role)) {
     return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
   }
 
